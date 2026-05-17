@@ -26,6 +26,11 @@ class AutoFeedbackRequest(ApiModel):
     source: str = "auto-inferred"
 
 
+class EnsureEvolutionRequest(ApiModel):
+    only_if_missing: bool = True
+    source: str = "self-evolution-guard"
+
+
 class AutoFeedbackResponse(ApiModel):
     status: str
     reason: str | None = None

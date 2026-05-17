@@ -800,6 +800,61 @@ class PipelineService:
             "inferredFeedback": inferred_feedback.model_dump(by_alias=True),
         }
 
+    def ensure_task_self_evolution(
+        self,
+        *,
+        task_id: str,
+        created_by: str = "self-evolution",
+        only_if_missing: bool = True,
+        source: str = "self-evolution-guard",
+    ) -> dict[str, Any]:
+        with self.session_factory() as db:
+            task = db.get(Task, task_id)
+            if not task:
+                raise ValueError(f"task not found: {task_id}")
+            if task.status != TaskStatus.completed.value:
+                raise ValueError("task is not completed yet")
+
+            summary = ""
+            if isinstance(task.result_payload, dict):
+                raw_summary = task.result_payload.get("summary")
+                if isinstance(raw_summary, str):
+                    summary = raw_summary
+                raw_llm_summary = task.result_payload.get("llmSummary")
+                if isinstance(raw_llm_summary, str) and raw_llm_summary:
+                    summary = f"{summary}\n{raw_llm_summary}".strip()
+
+            if not summary:
+                summary = task.goal
+
+            turns = [
+                ConversationTurn(role="user", content=task.goal),
+                ConversationTurn(role="assistant", content=summary),
+            ]
+
+        result = self.auto_feedback_from_conversation(
+            task_id=task_id,
+            turns=turns,
+            created_by=created_by,
+            only_if_missing=only_if_missing,
+            source=source,
+        )
+
+        with self.session_factory() as db:
+            self._publish(
+                db,
+                EventTopic.feedback_self_evolution_guarded,
+                {
+                    "taskId": task_id,
+                    "source": source,
+                    "status": result.get("status"),
+                    "reason": result.get("reason"),
+                    "candidateId": result.get("candidateId"),
+                },
+            )
+            db.commit()
+        return result
+
     def create_task(self, spec: TaskSpec, created_by: str = "anonymous", run_immediately: bool = True) -> Task:
         with self.session_factory() as db:
             self._evaporate_pheromones(db)
@@ -904,6 +959,73 @@ class PipelineService:
     def list_skills(self) -> list[Skill]:
         with self.session_factory() as db:
             return db.query(Skill).order_by(Skill.id.asc()).all()
+
+    def create_skill_from_factory(
+        self,
+        *,
+        skill_id: str,
+        name: str,
+        description: str,
+        base_strategy: str = "tool_first",
+        mcp_connectors: list[str] | None = None,
+        io_schema: dict[str, Any] | None = None,
+        permissions: dict[str, Any] | None = None,
+        cost_budget: dict[str, Any] | None = None,
+        created_by: str = "skills-factory",
+    ) -> Skill:
+        normalized_id = skill_id.strip().lower().replace(" ", "_")
+        if not normalized_id:
+            raise ValueError("skill_id is required")
+        if not re.fullmatch(r"[a-z0-9_\\-]{3,64}", normalized_id):
+            raise ValueError("skill_id must match [a-z0-9_-]{3,64}")
+        if not name.strip():
+            raise ValueError("name is required")
+
+        connectors = []
+        for item in mcp_connectors or []:
+            text = str(item).strip()
+            if text:
+                connectors.append(text[:120])
+        connectors = connectors[:20]
+
+        with self.session_factory() as db:
+            existing = db.get(Skill, normalized_id)
+            if existing:
+                raise ValueError(f"skill already exists: {normalized_id}")
+
+            skill = Skill(
+                id=normalized_id,
+                name=name.strip()[:120],
+                description=description.strip()[:1200],
+                version=1,
+                io_schema=io_schema or {"input": ["goal", "context"], "output": ["result"]},
+                permissions=permissions or {"network": True, "filesystem": "read_write"},
+                cost_budget=cost_budget or {"maxTokens": 8000},
+                config={
+                    "strategy": base_strategy,
+                    "factory": {
+                        "createdBy": created_by,
+                        "createdAt": datetime.now(timezone.utc).isoformat(),
+                        "mcpConnectors": connectors,
+                    },
+                },
+            )
+            db.add(skill)
+            db.flush()
+
+            self._publish(
+                db,
+                EventTopic.skill_factory_created,
+                {
+                    "skillId": skill.id,
+                    "name": skill.name,
+                    "strategy": base_strategy,
+                    "mcpConnectors": connectors,
+                },
+            )
+            db.commit()
+            db.refresh(skill)
+            return skill
 
     def get_candidate(self, skill_id: str, candidate_id: str) -> SkillCandidate:
         with self.session_factory() as db:

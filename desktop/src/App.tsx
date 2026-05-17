@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import {
   autoFeedback,
   createSkillCandidate,
+  createSkillFromFactory,
   createTask,
+  ensureEvolution,
   evaluateShadowReplay,
   getCanaryStatus,
   getHardeningReport,
@@ -30,10 +32,12 @@ import {
 import LlmConsolePage from "./components/LlmConsolePage";
 
 type Locale = "zh" | "en";
-type ScenarioId = "coding" | "office" | "research" | "debug" | "data" | "product";
+type ScenarioId = "coding" | "office" | "research" | "debug" | "data" | "product" | "skills_factory" | "video_creator";
 type ChatRole = "user" | "swarm" | "deliverable" | "system";
 type ViewMode = "workspace" | "llm";
 type SideTab = "feedback" | "evolution" | "system";
+type RuntimeStage = "idle" | "planning" | "executing" | "feedback" | "evolving" | "completed" | "error";
+type RuntimeStepStatus = "pending" | "running" | "completed" | "failed";
 
 type ScenarioTemplate = {
   id: ScenarioId;
@@ -70,6 +74,22 @@ type ChatMessage = {
   taskId?: string;
 };
 
+type RuntimeStep = {
+  id: string;
+  title: string;
+  detail: string;
+  status: RuntimeStepStatus;
+  at?: string;
+  taskId?: string;
+};
+
+type StreamingState = {
+  title: string;
+  text: string;
+  taskId?: string;
+  startedAt: string;
+};
+
 const SCENARIOS: ScenarioTemplate[] = [
   {
     id: "coding",
@@ -89,7 +109,7 @@ const SCENARIOS: ScenarioTemplate[] = [
       }
     },
     defaults: {
-      goal: "为用户管理页新增状态筛选与分页能力，并补齐单元测试。",
+      goal: "为用户管理页面新增状态筛选与分页能力，并补齐单元测试。",
       contextRefs: "repo://frontend/src/pages/users,repo://backend/app/api/routes/users.py",
       constraints: {
         doneWhen: ["all tests pass", "lint clean", "api backward compatible"],
@@ -116,7 +136,7 @@ const SCENARIOS: ScenarioTemplate[] = [
     labels: {
       zh: {
         goal: "工作目标",
-        context: "资料来源（文档、会议纪要、表格）",
+        context: "资料来源（文档、纪要、表格）",
         constraints: "输出格式要求（JSON）"
       },
       en: {
@@ -272,13 +292,88 @@ const SCENARIOS: ScenarioTemplate[] = [
         errorRateRise: 0
       }
     }
+  },
+  {
+    id: "skills_factory",
+    title: { zh: "Skills 工厂", en: "Skills Factory" },
+    subtitle: { zh: "技能目标 / MCP 接入 / 发布标准", en: "Skill Goal / MCP Connectors / Release Criteria" },
+    flow: { zh: ["设计", "组装", "验证"], en: ["Design", "Assemble", "Validate"] },
+    labels: {
+      zh: {
+        goal: "技能目标",
+        context: "可用资料与工具边界",
+        constraints: "技能验收标准（JSON）"
+      },
+      en: {
+        goal: "Skill Goal",
+        context: "Available assets and tool boundaries",
+        constraints: "Skill acceptance (JSON)"
+      }
+    },
+    defaults: {
+      goal: "构建一个可复用的技能，用于多轮任务中的自动改写与风险排序。",
+      contextRefs: "repo://skills,doc://playbook,mcp://github,mcp://filesystem",
+      constraints: {
+        output: "skill-card",
+        evolution: "guarded",
+        language: "zh-CN"
+      },
+      qualityTarget: 0.92,
+      priority: 1,
+      feedback: {
+        explicitScore: 0.9,
+        corrections: "请补充技能输入输出 schema 与失败回退策略。",
+        retryCount: 0,
+        editDistance: 0.1,
+        adoptionRate: 0.9,
+        errorRateRise: 0
+      }
+    }
+  },
+  {
+    id: "video_creator",
+    title: { zh: "短视频制作", en: "Short Video Studio" },
+    subtitle: { zh: "脚本 / 素材 / 输出镜头结构", en: "Script / Assets / Shot Structure" },
+    flow: { zh: ["策划", "分镜", "成片"], en: ["Plan", "Storyboard", "Deliver"] },
+    labels: {
+      zh: {
+        goal: "视频目标",
+        context: "素材库与参考链接",
+        constraints: "视频交付标准（JSON）"
+      },
+      en: {
+        goal: "Video Goal",
+        context: "Asset sources and references",
+        constraints: "Video acceptance (JSON)"
+      }
+    },
+    defaults: {
+      goal: "生成 60 秒产品介绍短视频脚本与分镜，突出核心卖点与行动号召。",
+      contextRefs: "doc://brand-voice,doc://product-points,mcp://canva,mcp://figma,mcp://drive",
+      constraints: {
+        output: "script+storyboard",
+        style: "future-tech",
+        durationSec: 60,
+        language: "zh-CN"
+      },
+      qualityTarget: 0.9,
+      priority: 2,
+      feedback: {
+        explicitScore: 0.88,
+        corrections: "请增加开场 3 秒抓钩和结尾 CTA 强度。",
+        retryCount: 1,
+        editDistance: 0.14,
+        adoptionRate: 0.86,
+        errorRateRise: 0
+      }
+    }
   }
 ];
 
 const UI = {
   zh: {
     title: "BeeAGI 任务工作台",
-    subtitle: "像聊天一样规划任务，稳定交付结果，再把反馈转成自动进化。",
+    subtitle: "像聊天一样规划任务，稳定交付成果，再把反馈转成自动进化。",
     language: "语言",
     workspace: "工作台",
     llmPage: "模型与 Token",
@@ -296,7 +391,7 @@ const UI = {
     latestTask: "最近任务",
     noTask: "暂无任务",
     chatTimeline: "对话式时间线",
-    emptyChat: "先执行一次任务，这里会生成完整过程记录。",
+    emptyChat: "先执行一个任务，这里会生成完整过程记录。",
     deliverable: "交付产物",
     deliverableEmpty: "任务完成后，这里会展示可直接使用的结果。",
     llmSummary: "模型补充说明",
@@ -347,7 +442,7 @@ const UI = {
     workflowLog: "流程日志",
     noWorkflowLog: "暂无日志",
     autoFeedbackDone: "已自动生成反馈并推进技能进化。",
-    autoFeedbackSkipped: "已存在反馈，自动反馈本轮跳过。",
+    autoFeedbackSkipped: "已存在反馈，本轮自动反馈跳过。",
     advanced: "高级设置"
   },
   en: {
@@ -445,7 +540,78 @@ function toTimeLabel(isoTime: string): string {
   return new Date(isoTime).toLocaleTimeString();
 }
 
+function toDayKey(isoTime: string): string {
+  const date = new Date(isoTime);
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, "0");
+  const d = `${date.getDate()}`.padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function dayGroupLabel(dayKey: string, locale: Locale): string {
+  const now = new Date();
+  const localKey = (date: Date) => {
+    const y = date.getFullYear();
+    const m = `${date.getMonth() + 1}`.padStart(2, "0");
+    const d = `${date.getDate()}`.padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+  const today = localKey(now);
+  const yesterdayDate = new Date(now);
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterday = localKey(yesterdayDate);
+  if (dayKey === today) {
+    return locale === "zh" ? "今天" : "Today";
+  }
+  if (dayKey === yesterday) {
+    return locale === "zh" ? "昨天" : "Yesterday";
+  }
+  const [y, m, d] = dayKey.split("-");
+  return locale === "zh" ? `${y}年${m}月${d}日` : `${y}-${m}-${d}`;
+}
+
+function runtimeStageLabel(stage: RuntimeStage, locale: Locale): string {
+  const zh: Record<RuntimeStage, string> = {
+    idle: "待命",
+    planning: "计划中",
+    executing: "执行中",
+    feedback: "反馈吸收",
+    evolving: "自进化",
+    completed: "已完成",
+    error: "异常"
+  };
+  const en: Record<RuntimeStage, string> = {
+    idle: "Idle",
+    planning: "Planning",
+    executing: "Executing",
+    feedback: "Feedback",
+    evolving: "Self-Evolving",
+    completed: "Completed",
+    error: "Error"
+  };
+  return locale === "zh" ? zh[stage] : en[stage];
+}
+
+function runtimeStepStatusLabel(status: RuntimeStepStatus, locale: Locale): string {
+  const zh: Record<RuntimeStepStatus, string> = {
+    pending: "等待",
+    running: "进行中",
+    completed: "完成",
+    failed: "失败"
+  };
+  const en: Record<RuntimeStepStatus, string> = {
+    pending: "Pending",
+    running: "Running",
+    completed: "Done",
+    failed: "Failed"
+  };
+  return locale === "zh" ? zh[status] : en[status];
+}
+
 function actionLabel(topic: string, locale: Locale): string {
+  if (topic === "feedback.self_evolution_guarded") {
+    return locale === "zh" ? "自进化保障" : "Self-evolution guarded";
+  }
   const zhMap: Record<string, string> = {
     "scout.reported": "完成侦察",
     "worker.planned": "完成计划图",
@@ -494,6 +660,14 @@ function App() {
   const [constraintsError, setConstraintsError] = useState("");
   const [qualityTarget, setQualityTarget] = useState(0.9);
   const [priority, setPriority] = useState(2);
+  const [workerCount, setWorkerCount] = useState(4);
+  const [scoutCount, setScoutCount] = useState(3);
+  const [mcpConnectorsText, setMcpConnectorsText] = useState("filesystem,github,notion,slack");
+
+  const [factorySkillId, setFactorySkillId] = useState("skill_future_assistant");
+  const [factorySkillName, setFactorySkillName] = useState("Future Assistant Skill");
+  const [factorySkillDescription, setFactorySkillDescription] = useState("Auto-evolving skill for multi-turn delivery and review.");
+  const [factoryStrategy, setFactoryStrategy] = useState("tool_first");
 
   const [explicitScore, setExplicitScore] = useState(0.9);
   const [corrections, setCorrections] = useState("");
@@ -522,6 +696,9 @@ function App() {
   const [healthBusy, setHealthBusy] = useState(false);
   const [patrolBusy, setPatrolBusy] = useState(false);
   const [workflowLogs, setWorkflowLogs] = useState<string[]>([]);
+  const [runtimeStage, setRuntimeStage] = useState<RuntimeStage>("idle");
+  const [runtimeSteps, setRuntimeSteps] = useState<RuntimeStep[]>([]);
+  const [streamingState, setStreamingState] = useState<StreamingState | null>(null);
 
   const scenario = useMemo(() => SCENARIOS.find((item) => item.id === scenarioId) ?? SCENARIOS[0], [scenarioId]);
   const labels = scenario.labels[locale];
@@ -562,6 +739,96 @@ function App() {
     [events]
   );
 
+  const timelineGroups = useMemo(() => {
+    const sorted = [...chatMessages].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    const grouped = new Map<string, ChatMessage[]>();
+    for (const message of sorted) {
+      const key = toDayKey(message.time);
+      const list = grouped.get(key) ?? [];
+      list.push(message);
+      grouped.set(key, list);
+    }
+    return Array.from(grouped.entries()).map(([key, items]) => ({ key, label: dayGroupLabel(key, locale), items }));
+  }, [chatMessages, locale]);
+
+  const runtimeProgress = useMemo(() => {
+    if (runtimeSteps.length === 0) {
+      return 0;
+    }
+    const score = runtimeSteps.reduce((acc, step) => {
+      if (step.status === "completed") {
+        return acc + 1;
+      }
+      if (step.status === "running") {
+        return acc + 0.5;
+      }
+      return acc;
+    }, 0);
+    return Math.round((score / runtimeSteps.length) * 100);
+  }, [runtimeSteps]);
+
+  const buildRuntimeSteps = (executionSteps: string[]): RuntimeStep[] => {
+    const execution = executionSteps.length > 0 ? executionSteps : [locale === "zh" ? "执行" : "Execute"];
+    return [
+      {
+        id: "plan",
+        title: locale === "zh" ? "计划图生成" : "Plan Graph",
+        detail: locale === "zh" ? "基于目标和上下文生成执行计划" : "Generate execution graph from goal and context.",
+        status: "pending"
+      },
+      ...execution.map((step, index) => ({
+        id: `exec-${index}`,
+        title: step,
+        detail: locale === "zh" ? "执行该步骤并产出阶段结果" : "Execute this step and produce intermediate output.",
+        status: "pending" as const
+      })),
+      {
+        id: "deliverable",
+        title: locale === "zh" ? "交付整合" : "Deliverable",
+        detail: locale === "zh" ? "汇总最终产物与关键说明" : "Compile final deliverable with key notes.",
+        status: "pending"
+      },
+      {
+        id: "feedback",
+        title: locale === "zh" ? "反馈吸收" : "Feedback Loop",
+        detail: locale === "zh" ? "吸收显式/隐式反馈信号" : "Capture explicit and implicit feedback signals.",
+        status: "pending"
+      },
+      {
+        id: "evolution",
+        title: locale === "zh" ? "自进化保障" : "Self-Evolution Guard",
+        detail: locale === "zh" ? "确保反馈缺失时仍触发技能进化" : "Guarantee skill evolution even if feedback is missing.",
+        status: "pending"
+      }
+    ];
+  };
+
+  const patchRuntimeStep = (id: string, status: RuntimeStepStatus, detail?: string, taskId?: string) => {
+    setRuntimeSteps((prev) =>
+      prev.map((step) =>
+        step.id === id
+          ? {
+              ...step,
+              status,
+              detail: detail ?? step.detail,
+              at: new Date().toISOString(),
+              taskId: taskId ?? step.taskId
+            }
+          : step
+      )
+    );
+  };
+
+  const markRuntimeFailure = (stepId: string, message: string) => {
+    patchRuntimeStep(stepId, "failed", message);
+    setRuntimeStage("error");
+    setStreamingState({
+      title: locale === "zh" ? "运行异常" : "Run Error",
+      text: message,
+      startedAt: new Date().toISOString()
+    });
+  };
+
   const applyTemplate = (scene: ScenarioTemplate) => {
     setGoal(scene.defaults.goal);
     setContextRefs(scene.defaults.contextRefs);
@@ -575,6 +842,36 @@ function App() {
     setAdoptionRate(scene.defaults.feedback.adoptionRate);
     setErrorRateRise(scene.defaults.feedback.errorRateRise);
     setConstraintsError("");
+
+    if (scene.id === "skills_factory") {
+      setWorkerCount(6);
+      setScoutCount(5);
+      setMcpConnectorsText("filesystem,github,notion,slack,openai-developers");
+      setFactorySkillId("skill_factory_designer");
+      setFactorySkillName("Skill Factory Designer");
+      setFactorySkillDescription("Designs, validates and promotes reusable enterprise skills.");
+      setFactoryStrategy("tool_first");
+      return;
+    }
+
+    if (scene.id === "video_creator") {
+      setWorkerCount(5);
+      setScoutCount(4);
+      setMcpConnectorsText("canva,figma,google-drive,slack,filesystem");
+      setFactorySkillId("skill_video_storyline");
+      setFactorySkillName("Video Storyline Composer");
+      setFactorySkillDescription("Builds short-video scripts, storyboard blocks and CTA variants.");
+      setFactoryStrategy("tree_of_thought");
+      return;
+    }
+
+    setWorkerCount(4);
+    setScoutCount(3);
+    setMcpConnectorsText("filesystem,github,notion,slack");
+    setFactorySkillId("skill_future_assistant");
+    setFactorySkillName("Future Assistant Skill");
+    setFactorySkillDescription("Auto-evolving skill for multi-turn delivery and review.");
+    setFactoryStrategy("tool_first");
   };
 
   const clearTaskInput = () => {
@@ -619,6 +916,27 @@ function App() {
       return null;
     }
   };
+
+  const buildMcpConnectors = () =>
+    mcpConnectorsText
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+
+  const mergeExecutionConstraints = (base: Record<string, unknown>) => ({
+    ...base,
+    swarmConfig: {
+      workerCount,
+      scoutCount,
+      ensembleMode: "weighted-vote"
+    },
+    mcpConnectors: buildMcpConnectors(),
+    skillFactoryHints: {
+      preferredStrategy: factoryStrategy,
+      targetSkillId: factorySkillId
+    }
+  });
 
   const buildContextRefs = () =>
     contextRefs
@@ -705,11 +1023,44 @@ function App() {
     setToast(ui.autoFeedbackSkipped);
   };
 
+  const runSelfEvolutionGuard = async (task: TaskDetail, source: string) => {
+    const guard = await ensureEvolution(task.id, true, source);
+    setAutoFeedbackState(`guard:${guard.status}`);
+    if (guard.candidateId) {
+      setCandidateId(guard.candidateId);
+    }
+    appendWorkflowLog(`self-evolution: ${guard.status}${guard.reason ? `(${guard.reason})` : ""}`);
+    appendChat({
+      role: "system",
+      title: locale === "zh" ? "自进化保障" : "Self-Evolution Guard",
+      text:
+        guard.status === "submitted"
+          ? locale === "zh"
+            ? "已自动补齐反馈并推动技能候选更新。"
+            : "Feedback auto-filled and skill candidate evolution was triggered."
+          : locale === "zh"
+            ? `已检查保障链路，本轮无需追加进化（${guard.reason ?? "已有反馈"}）。`
+            : `Guard checked. No extra evolution needed this round (${guard.reason ?? "feedback already exists"}).`,
+      time: new Date().toISOString(),
+      taskId: task.id
+    });
+    return guard;
+  };
+
   const runTaskRound = async () => {
     const constraints = parseConstraints();
     if (!constraints) {
       return;
     }
+
+    setRuntimeSteps(buildRuntimeSteps([flow[0]]));
+    setRuntimeStage("planning");
+    patchRuntimeStep("plan", "running", locale === "zh" ? "正在生成计划图..." : "Building plan graph...");
+    setStreamingState({
+      title: locale === "zh" ? "蜂群执行中" : "Swarm Running",
+      text: locale === "zh" ? "正在进行计划与执行准备..." : "Preparing plan and execution...",
+      startedAt: new Date().toISOString()
+    });
 
     appendChat({
       role: "user",
@@ -718,24 +1069,39 @@ function App() {
       time: new Date().toISOString()
     });
 
+    let activeStepId = "plan";
     try {
       setBusy(true);
+      setRuntimeStage("executing");
+      patchRuntimeStep("exec-0", "running", locale === "zh" ? "正在执行步骤..." : "Executing step...");
+      activeStepId = "exec-0";
+      setStreamingState({
+        title: locale === "zh" ? "蜂群执行中" : "Swarm Running",
+        text: `${flow[0]}...`,
+        startedAt: new Date().toISOString()
+      });
+
       const spec: TaskSpec = {
         goal,
-        constraints,
+        constraints: mergeExecutionConstraints(constraints),
         contextRefs: buildContextRefs(),
         qualityTarget,
         priority
       };
       const task = await createTask(spec, false);
       setLatestTask(task);
-      appendChat({
-        role: "swarm",
-        title: flow[0],
-        text: typeof task.resultPayload?.summary === "string" ? task.resultPayload.summary : task.goal,
-        time: task.createdAt,
-        taskId: task.id
-      });
+
+      const planSize = task.planGraph?.nodes?.length ?? 0;
+      patchRuntimeStep(
+        "plan",
+        "completed",
+        locale === "zh" ? `计划图已生成（${planSize} 个节点）` : `Plan graph generated (${planSize} nodes).`,
+        task.id
+      );
+
+      const summaryText = typeof task.resultPayload?.summary === "string" ? task.resultPayload.summary : task.goal;
+      patchRuntimeStep("exec-0", "completed", summaryText, task.id);
+      appendChat({ role: "swarm", title: flow[0], text: summaryText, time: task.createdAt, taskId: task.id });
       appendChat({
         role: "deliverable",
         title: ui.deliverable,
@@ -743,24 +1109,79 @@ function App() {
         time: task.updatedAt,
         taskId: task.id
       });
+      patchRuntimeStep("deliverable", "completed", locale === "zh" ? "已输出可交付产物" : "Deliverable generated.", task.id);
 
+      setRuntimeStage("feedback");
+      patchRuntimeStep("feedback", "running", locale === "zh" ? "正在吸收反馈信号..." : "Absorbing feedback signals...");
+      activeStepId = "feedback";
       if (autoInferFeedbackEnabled) {
         const autoTurns: ConversationTurn[] = [
           { role: "user", content: `${labels.goal}: ${goal}\n${labels.context}: ${contextRefs}` },
-          { role: "assistant", content: typeof task.resultPayload?.summary === "string" ? task.resultPayload.summary : task.goal },
+          { role: "assistant", content: summaryText },
           { role: "assistant", content: buildDeliverableText(task) }
         ];
-        await applyAutoFeedback(task, "task-round", autoTurns);
+        try {
+          await applyAutoFeedback(task, "task-round", autoTurns);
+          patchRuntimeStep("feedback", "completed", locale === "zh" ? "自动反馈已提交" : "Auto feedback submitted.", task.id);
+        } catch (autoError) {
+          appendWorkflowLog(`auto-feedback error: ${errorText(autoError)}`);
+          patchRuntimeStep(
+            "feedback",
+            "failed",
+            locale === "zh" ? "自动反馈失败，改走自进化保障兜底" : "Auto feedback failed. Fallback to self-evolution guard.",
+            task.id
+          );
+        }
+      } else {
+        patchRuntimeStep(
+          "feedback",
+          "completed",
+          locale === "zh" ? "自动反馈关闭，等待手动反馈" : "Auto feedback disabled. Waiting for manual feedback.",
+          task.id
+        );
       }
+
+      setRuntimeStage("evolving");
+      patchRuntimeStep("evolution", "running", locale === "zh" ? "正在执行自进化保障..." : "Running self-evolution guard...");
+      activeStepId = "evolution";
+      setStreamingState({
+        title: locale === "zh" ? "蜂群进化中" : "Swarm Evolving",
+        text: locale === "zh" ? "正在确保技能持续进化..." : "Ensuring skills evolve continuously...",
+        taskId: task.id,
+        startedAt: new Date().toISOString()
+      });
+      const guard = await runSelfEvolutionGuard(task, "task-round-guard");
+      patchRuntimeStep(
+        "evolution",
+        "completed",
+        guard.status === "submitted"
+          ? locale === "zh"
+            ? "已触发技能进化候选"
+            : "Evolution candidate triggered."
+          : locale === "zh"
+            ? "保障检查通过（无需新增候选）"
+            : "Guard check passed (no new candidate needed).",
+        task.id
+      );
 
       await refreshData();
       appendWorkflowLog(`task: ${task.id}`);
+      setRuntimeStage("completed");
+      setStreamingState({
+        title: locale === "zh" ? "执行完成" : "Run Completed",
+        text: locale === "zh" ? "任务、反馈与自进化保障已完成。" : "Task, feedback, and self-evolution guard are complete.",
+        taskId: task.id,
+        startedAt: new Date().toISOString()
+      });
       setToast(`OK: ${task.id}`);
     } catch (error) {
-      setToast(errorText(error));
-      appendWorkflowLog(`error: ${errorText(error)}`);
+      const message = errorText(error);
+      setToast(message);
+      appendWorkflowLog(`error: ${message}`);
+      markRuntimeFailure(activeStepId, message);
     } finally {
       setBusy(false);
+      window.setTimeout(() => setStreamingState(null), 1400);
     }
   };
 
@@ -770,14 +1191,19 @@ function App() {
       return;
     }
 
-    appendWorkflowLog(`start: ${scenario.title[locale]} | ${flow.join(" -> ")}`);
-    appendChat({
-      role: "user",
-      title: scenario.title[locale],
-      text: goal,
-      time: new Date().toISOString()
+    setRuntimeSteps(buildRuntimeSteps(flow));
+    setRuntimeStage("planning");
+    patchRuntimeStep("plan", "running", locale === "zh" ? "正在准备场景流程计划..." : "Preparing scenario plan...");
+    setStreamingState({
+      title: locale === "zh" ? "蜂群执行中" : "Swarm Running",
+      text: locale === "zh" ? "正在进入多步骤流程..." : "Entering multi-step workflow...",
+      startedAt: new Date().toISOString()
     });
 
+    appendWorkflowLog(`start: ${scenario.title[locale]} | ${flow.join(" -> ")}`);
+    appendChat({ role: "user", title: scenario.title[locale], text: goal, time: new Date().toISOString() });
+
+    let activeStepId = "plan";
     try {
       setWorkflowBusy(true);
       let previousTask: TaskDetail | undefined;
@@ -785,10 +1211,19 @@ function App() {
 
       for (let i = 0; i < flow.length; i += 1) {
         const step = flow[i];
+        const stepId = `exec-${i}`;
+        setRuntimeStage("executing");
+        patchRuntimeStep(stepId, "running", locale === "zh" ? `正在执行：${step}` : `Running: ${step}`);
+        setStreamingState({
+          title: locale === "zh" ? "蜂群执行中" : "Swarm Running",
+          text: locale === "zh" ? `步骤 ${i + 1}/${flow.length}: ${step}` : `Step ${i + 1}/${flow.length}: ${step}`,
+          startedAt: new Date().toISOString()
+        });
+        activeStepId = stepId;
         appendWorkflowLog(`step ${i + 1}/${flow.length}: ${step}`);
 
         const mergedConstraints = {
-          ...constraints,
+          ...mergeExecutionConstraints(constraints),
           scenarioId: scenario.id,
           scenarioStep: step,
           scenarioStepIndex: i + 1
@@ -810,23 +1245,27 @@ function App() {
           false
         );
 
+        if (i === 0) {
+          const planSize = task.planGraph?.nodes?.length ?? 0;
+          patchRuntimeStep(
+            "plan",
+            "completed",
+            locale === "zh" ? `计划图已准备（${planSize} 个节点）` : `Plan graph prepared (${planSize} nodes).`,
+            task.id
+          );
+        }
+
         previousTask = task;
         setLatestTask(task);
-        appendChat({
-          role: "swarm",
-          title: step,
-          text: typeof task.resultPayload?.summary === "string" ? task.resultPayload.summary : task.goal,
-          time: task.updatedAt,
-          taskId: task.id
-        });
-        flowTurns.push({
-          role: "assistant",
-          content: typeof task.resultPayload?.summary === "string" ? task.resultPayload.summary : task.goal
-        });
+        const summaryText = typeof task.resultPayload?.summary === "string" ? task.resultPayload.summary : task.goal;
+        patchRuntimeStep(stepId, "completed", summaryText, task.id);
+        appendChat({ role: "swarm", title: step, text: summaryText, time: task.updatedAt, taskId: task.id });
+        flowTurns.push({ role: "assistant", content: summaryText });
         appendWorkflowLog(`done: ${step} | ${task.id}`);
       }
 
       if (previousTask) {
+        patchRuntimeStep("deliverable", "running", locale === "zh" ? "正在合成交付产物..." : "Compiling deliverable...");
         appendChat({
           role: "deliverable",
           title: ui.deliverable,
@@ -834,20 +1273,74 @@ function App() {
           time: previousTask.updatedAt,
           taskId: previousTask.id
         });
+        patchRuntimeStep("deliverable", "completed", locale === "zh" ? "最终交付已生成" : "Final deliverable generated.", previousTask.id);
 
+        setRuntimeStage("feedback");
+        patchRuntimeStep("feedback", "running", locale === "zh" ? "正在吸收反馈信号..." : "Absorbing feedback signals...");
+        activeStepId = "feedback";
         if (autoInferFeedbackEnabled) {
           flowTurns.push({ role: "assistant", content: buildDeliverableText(previousTask) });
-          await applyAutoFeedback(previousTask, "scenario-flow", flowTurns);
+          try {
+            await applyAutoFeedback(previousTask, "scenario-flow", flowTurns);
+            patchRuntimeStep("feedback", "completed", locale === "zh" ? "自动反馈已提交" : "Auto feedback submitted.", previousTask.id);
+          } catch (autoError) {
+            appendWorkflowLog(`auto-feedback error: ${errorText(autoError)}`);
+            patchRuntimeStep(
+              "feedback",
+              "failed",
+              locale === "zh" ? "自动反馈失败，改走自进化保障兜底" : "Auto feedback failed. Fallback to self-evolution guard.",
+              previousTask.id
+            );
+          }
+        } else {
+          patchRuntimeStep(
+            "feedback",
+            "completed",
+            locale === "zh" ? "自动反馈关闭，等待手动反馈" : "Auto feedback disabled. Waiting for manual feedback.",
+            previousTask.id
+          );
         }
+
+        setRuntimeStage("evolving");
+        patchRuntimeStep("evolution", "running", locale === "zh" ? "正在执行自进化保障..." : "Running self-evolution guard...");
+        activeStepId = "evolution";
+        setStreamingState({
+          title: locale === "zh" ? "蜂群进化中" : "Swarm Evolving",
+          text: locale === "zh" ? "正在确保技能持续进化..." : "Ensuring skills evolve continuously...",
+          taskId: previousTask.id,
+          startedAt: new Date().toISOString()
+        });
+        const guard = await runSelfEvolutionGuard(previousTask, "scenario-flow-guard");
+        patchRuntimeStep(
+          "evolution",
+          "completed",
+          guard.status === "submitted"
+            ? locale === "zh"
+              ? "已触发技能进化候选"
+              : "Evolution candidate triggered."
+            : locale === "zh"
+              ? "保障检查通过（无需新增候选）"
+              : "Guard check passed (no new candidate needed).",
+          previousTask.id
+        );
       }
 
       await refreshData();
+      setRuntimeStage("completed");
+      setStreamingState({
+        title: locale === "zh" ? "流程完成" : "Workflow Completed",
+        text: locale === "zh" ? "多步骤流程、反馈与进化保障已完成。" : "Workflow, feedback, and evolution guard are complete.",
+        startedAt: new Date().toISOString()
+      });
       setToast(locale === "zh" ? "流程执行完成" : "Workflow completed");
     } catch (error) {
-      setToast(errorText(error));
-      appendWorkflowLog(`error: ${errorText(error)}`);
+      const message = errorText(error);
+      setToast(message);
+      appendWorkflowLog(`error: ${message}`);
+      markRuntimeFailure(activeStepId, message);
     } finally {
       setWorkflowBusy(false);
+      window.setTimeout(() => setStreamingState(null), 1400);
     }
   };
 
@@ -878,7 +1371,35 @@ function App() {
     }
     try {
       await applyAutoFeedback(latestTask, "manual-trigger");
+    } catch (error) {
+      appendWorkflowLog(`auto-feedback error: ${errorText(error)}`);
+    }
+    try {
+      await runSelfEvolutionGuard(latestTask, "manual-trigger-guard");
       await refreshData();
+    } catch (error) {
+      setToast(errorText(error));
+    }
+  };
+
+  const createSkillByFactory = async () => {
+    try {
+      const skill = await createSkillFromFactory({
+        skillId: factorySkillId,
+        name: factorySkillName,
+        description: factorySkillDescription,
+        baseStrategy: factoryStrategy,
+        mcpConnectors: buildMcpConnectors(),
+        ioSchema: {
+          input: ["goal", "constraints", "contextRefs"],
+          output: ["summary", "planGraph", "deliverable"]
+        },
+        permissions: { network: true, filesystem: "read_write" },
+        costBudget: { maxTokens: 14000 }
+      });
+      await refreshData();
+      setSelectedSkillId(skill.id);
+      setToast(locale === "zh" ? `Skills工厂已创建: ${skill.id}` : `Skill created by factory: ${skill.id}`);
     } catch (error) {
       setToast(errorText(error));
     }
@@ -1123,6 +1644,40 @@ function App() {
           </aside>
 
           <main className="main-stage">
+            <section className="card runtime-card">
+              <div className="hero-head">
+                <h2>{locale === "zh" ? "任务运行状态" : "Task Run Status"}</h2>
+                <span className={`badge runtime-stage runtime-stage-${runtimeStage}`}>{runtimeStageLabel(runtimeStage, locale)}</span>
+              </div>
+              <div className="runtime-track">
+                {runtimeSteps.length === 0 ? (
+                  <div className="runtime-track-empty">{locale === "zh" ? "等待任务启动" : "Waiting for run to start"}</div>
+                ) : (
+                  runtimeSteps.map((step) => <div key={step.id} className={`runtime-segment runtime-segment-${step.status}`} title={step.title} />)
+                )}
+              </div>
+              <p className="hint">{runtimeProgress}%</p>
+              <details className="runtime-details" open>
+                <summary>{locale === "zh" ? "可折叠步骤详情" : "Collapsible Step Details"}</summary>
+                {runtimeSteps.length === 0 ? (
+                  <p className="hint">{locale === "zh" ? "开始任务后展示详细步骤。" : "Detailed steps appear after a run starts."}</p>
+                ) : (
+                  <ul className="runtime-step-list">
+                    {runtimeSteps.map((step) => (
+                      <li key={step.id} className="runtime-step-item">
+                        <div className="runtime-step-row">
+                          <strong>{step.title}</strong>
+                          <span className={`badge step-badge step-badge-${step.status}`}>{runtimeStepStatusLabel(step.status, locale)}</span>
+                        </div>
+                        <p>{step.detail}</p>
+                        {step.at && <small>{toTimeLabel(step.at)}</small>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </details>
+            </section>
+
             <section className="card deliverable-hero">
               <div className="hero-head">
                 <h2>{ui.deliverable}</h2>
@@ -1162,18 +1717,41 @@ function App() {
                 <h2>{ui.chatTimeline}</h2>
               </div>
               <div className="chat-timeline">
-                {chatMessages.length === 0 && <p className="hint">{ui.emptyChat}</p>}
-                {chatMessages.map((item) => (
-                  <article key={item.id} className={`chat-row chat-row-${item.role}`}>
-                    <div className={`bubble bubble-${item.role}`}>
+                {timelineGroups.length === 0 && <p className="hint">{ui.emptyChat}</p>}
+                {timelineGroups.map((group) => (
+                  <div key={group.key} className="timeline-group">
+                    <div className="timeline-day">{group.label}</div>
+                    {group.items.map((item) => (
+                      <article key={item.id} className={`chat-row chat-row-${item.role}`}>
+                        <div className={`bubble bubble-${item.role}`}>
+                          <div className="bubble-head">
+                            <strong>{item.title}</strong>
+                            <span>{toTimeLabel(item.time)}</span>
+                          </div>
+                          <p>{item.text}</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ))}
+                {streamingState && (
+                  <article className="chat-row chat-row-swarm">
+                    <div className="bubble bubble-swarm bubble-streaming">
                       <div className="bubble-head">
-                        <strong>{item.title}</strong>
-                        <span>{toTimeLabel(item.time)}</span>
+                        <strong>{streamingState.title}</strong>
+                        <span>{toTimeLabel(streamingState.startedAt)}</span>
                       </div>
-                      <p>{item.text}</p>
+                      <p>
+                        {streamingState.text}
+                        <span className="streaming-dots" aria-hidden="true">
+                          <span>.</span>
+                          <span>.</span>
+                          <span>.</span>
+                        </span>
+                      </p>
                     </div>
                   </article>
-                ))}
+                )}
               </div>
             </section>
 
@@ -1228,6 +1806,19 @@ function App() {
                     <input type="number" min={1} max={5} value={priority} onChange={(event) => setPriority(Number(event.target.value))} />
                   </div>
                 </div>
+
+                <div className="row">
+                  <div>
+                    <label>{locale === "zh" ? "工蜂数量" : "Worker Count"}</label>
+                    <input type="number" min={1} max={12} value={workerCount} onChange={(event) => setWorkerCount(Number(event.target.value))} />
+                  </div>
+                  <div>
+                    <label>{locale === "zh" ? "斥候数量" : "Scout Count"}</label>
+                    <input type="number" min={1} max={12} value={scoutCount} onChange={(event) => setScoutCount(Number(event.target.value))} />
+                  </div>
+                </div>
+                <label>{locale === "zh" ? "MCP连接器（逗号分隔）" : "MCP Connectors (comma separated)"}</label>
+                <input value={mcpConnectorsText} onChange={(event) => setMcpConnectorsText(event.target.value)} placeholder="filesystem,github,notion,slack" />
               </details>
 
               <div className="composer-actions">
@@ -1260,11 +1851,7 @@ function App() {
               <section className="card side-card">
                 <h2>{ui.rightFeedback}</h2>
                 <label className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={autoInferFeedbackEnabled}
-                    onChange={(event) => setAutoInferFeedbackEnabled(event.target.checked)}
-                  />
+                  <input type="checkbox" checked={autoInferFeedbackEnabled} onChange={(event) => setAutoInferFeedbackEnabled(event.target.checked)} />
                   <span>{ui.autoFeedback}</span>
                 </label>
                 <p className="hint">{ui.autoFeedbackHint}</p>
@@ -1278,45 +1865,17 @@ function App() {
                 <details className="manual-feedback">
                   <summary>{ui.submitFeedback}</summary>
                   <label>{ui.explicitScore}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={explicitScore}
-                    onChange={(event) => setExplicitScore(Number(event.target.value))}
-                  />
+                  <input type="number" min={0} max={1} step={0.01} value={explicitScore} onChange={(event) => setExplicitScore(Number(event.target.value))} />
                   <label>{ui.corrections}</label>
                   <textarea rows={3} value={corrections} onChange={(event) => setCorrections(event.target.value)} />
                   <label>{ui.retryCount}</label>
                   <input type="number" min={0} value={retryCount} onChange={(event) => setRetryCount(Number(event.target.value))} />
                   <label>{ui.editDistance}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={editDistance}
-                    onChange={(event) => setEditDistance(Number(event.target.value))}
-                  />
+                  <input type="number" min={0} max={1} step={0.01} value={editDistance} onChange={(event) => setEditDistance(Number(event.target.value))} />
                   <label>{ui.adoptionRate}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={adoptionRate}
-                    onChange={(event) => setAdoptionRate(Number(event.target.value))}
-                  />
+                  <input type="number" min={0} max={1} step={0.01} value={adoptionRate} onChange={(event) => setAdoptionRate(Number(event.target.value))} />
                   <label>{ui.errorRateRise}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={errorRateRise}
-                    onChange={(event) => setErrorRateRise(Number(event.target.value))}
-                  />
+                  <input type="number" min={0} max={1} step={0.01} value={errorRateRise} onChange={(event) => setErrorRateRise(Number(event.target.value))} />
                   <button className="button" onClick={sendFeedback} disabled={!latestTask}>
                     {ui.submitFeedback}
                   </button>
@@ -1328,13 +1887,18 @@ function App() {
               <>
                 <section className="card side-card">
                   <h2>{ui.swarm}</h2>
+                  <p className="hint">
+                    {locale === "zh"
+                      ? `当前编队：工蜂 ${workerCount} / 斥候 ${scoutCount}`
+                      : `Current squad: workers ${workerCount} / scouts ${scoutCount}`}
+                  </p>
                   <ul className="compact-list">
                     {roleStats.map((item) => (
                       <li key={item.role.key}>
-                        {item.role.name[locale]} · {item.count}
+                        {item.role.name[locale]} | {item.count}
                         {item.latest && (
                           <span className="hint-block">
-                            {ui.roleAction}: {actionLabel(item.latest.topic, locale)} · {ui.roleAt}: {toTimeLabel(item.latest.createdAt)}
+                            {ui.roleAction}: {actionLabel(item.latest.topic, locale)} | {ui.roleAt}: {toTimeLabel(item.latest.createdAt)}
                           </span>
                         )}
                       </li>
@@ -1358,6 +1922,30 @@ function App() {
                       ))}
                     </ul>
                   )}
+                </section>
+
+                <section className="card side-card">
+                  <h2>{locale === "zh" ? "Skills 工厂" : "Skills Factory"}</h2>
+                  <p className="hint">
+                    {locale === "zh"
+                      ? "把 MCP 接入与技能模板直接铸造成新 Skill，并纳入自进化链路。"
+                      : "Forge MCP connectors and templates into a new Skill and attach it to self-evolution."}
+                  </p>
+                  <label>{locale === "zh" ? "技能ID" : "Skill ID"}</label>
+                  <input value={factorySkillId} onChange={(event) => setFactorySkillId(event.target.value)} />
+                  <label>{locale === "zh" ? "技能名称" : "Skill Name"}</label>
+                  <input value={factorySkillName} onChange={(event) => setFactorySkillName(event.target.value)} />
+                  <label>{locale === "zh" ? "技能说明" : "Description"}</label>
+                  <textarea rows={3} value={factorySkillDescription} onChange={(event) => setFactorySkillDescription(event.target.value)} />
+                  <label>{locale === "zh" ? "策略" : "Strategy"}</label>
+                  <select value={factoryStrategy} onChange={(event) => setFactoryStrategy(event.target.value)}>
+                    <option value="tool_first">tool_first</option>
+                    <option value="tree_of_thought">tree_of_thought</option>
+                    <option value="review_repair_loop">review_repair_loop</option>
+                  </select>
+                  <button className="button button-primary" onClick={createSkillByFactory}>
+                    {locale === "zh" ? "创建技能" : "Create Skill"}
+                  </button>
                 </section>
 
                 <section className="card side-card">
@@ -1407,6 +1995,7 @@ function App() {
                     {healthBusy ? ui.healthChecking : ui.runHealth}
                   </button>
                 </div>
+
                 <div className="report-box">
                   {hardeningReport ? (
                     <ul className="compact-list">

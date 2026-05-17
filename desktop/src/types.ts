@@ -67,6 +67,17 @@ export interface SkillDelta {
   evidence: Record<string, unknown>;
 }
 
+export interface CreateSkillFactoryPayload {
+  skillId: string;
+  name: string;
+  description: string;
+  baseStrategy?: string;
+  mcpConnectors?: string[];
+  ioSchema?: Record<string, unknown>;
+  permissions?: Record<string, unknown>;
+  costBudget?: Record<string, unknown>;
+}
+
 export interface CandidateResponse {
   id: string;
   skillId: string;

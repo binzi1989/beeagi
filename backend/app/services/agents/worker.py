@@ -12,6 +12,21 @@ class WorkerAgent:
     def __init__(self, model_router: ModelRouter | None = None) -> None:
         self.model_router = model_router
 
+    def _safe_int(self, value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
+    def _resolve_swarm_counts(self, constraints: dict[str, Any]) -> tuple[int, int]:
+        swarm = constraints.get("swarmConfig") if isinstance(constraints, dict) else {}
+        if not isinstance(swarm, dict):
+            swarm = {}
+        worker_count = self._safe_int(swarm.get("workerCount"), default=3, minimum=1, maximum=12)
+        scout_count = self._safe_int(swarm.get("scoutCount"), default=2, minimum=1, maximum=12)
+        return worker_count, scout_count
+
     def _collect_patch_effects(self, selected_skills: list[dict[str, Any]]) -> dict[str, Any]:
         patch_effects = {
             "promptTweaks": {},
@@ -36,21 +51,52 @@ class WorkerAgent:
         return patch_effects
 
     def build_plan(self, spec: TaskSpec, scout_report: dict[str, Any]) -> dict[str, Any]:
-        nodes = [
-            {"id": "n1", "title": "Analyze intent", "owner": "worker"},
-            {"id": "n2", "title": "Select skills", "owner": "worker"},
-            {"id": "n3", "title": "Execute toolchain", "owner": "worker"},
-            {"id": "n4", "title": "Synthesize output", "owner": "worker"},
-        ]
-        edges = [
-            {"from": "n1", "to": "n2"},
-            {"from": "n2", "to": "n3"},
-            {"from": "n3", "to": "n4"},
-        ]
+        worker_count, scout_count = self._resolve_swarm_counts(spec.constraints)
+        nodes = [{"id": "n1", "title": "Analyze intent", "owner": "worker-1"}]
+        edges: list[dict[str, str]] = []
+
+        previous = "n1"
+        worker_node_ids: list[str] = []
+        for idx in range(worker_count):
+            node_id = f"w{idx + 1}"
+            worker_node_ids.append(node_id)
+            nodes.append(
+                {
+                    "id": node_id,
+                    "title": f"Worker {idx + 1} parallel draft",
+                    "owner": f"worker-{idx + 1}",
+                }
+            )
+            edges.append({"from": previous, "to": node_id})
+
+        ensemble_node = "ens1"
+        nodes.append({"id": ensemble_node, "title": "Ensemble vote & recommendation", "owner": "worker-ensemble"})
+        for worker_node in worker_node_ids:
+            edges.append({"from": worker_node, "to": ensemble_node})
+
+        execute_node = "n_exec"
+        synth_node = "n_synth"
+        nodes.extend(
+            [
+                {"id": execute_node, "title": "Execute toolchain", "owner": "worker-runtime"},
+                {"id": synth_node, "title": "Synthesize output", "owner": "worker-runtime"},
+            ]
+        )
+        edges.extend(
+            [
+                {"from": ensemble_node, "to": execute_node},
+                {"from": execute_node, "to": synth_node},
+            ]
+        )
+
+        risk_flags = list(scout_report.get("riskFlags", []))
+        if worker_count >= 8:
+            risk_flags.append("high_worker_parallelism_cost")
         return {
             "nodes": nodes,
             "edges": edges,
-            "riskFlags": scout_report.get("riskFlags", []),
+            "riskFlags": risk_flags,
+            "swarmConfig": {"workerCount": worker_count, "scoutCount": scout_count},
         }
 
     def execute(
@@ -60,6 +106,8 @@ class WorkerAgent:
         scout_pheromones: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = datetime.now(timezone.utc)
+        constraints = task.constraints if isinstance(task.constraints, dict) else {}
+        worker_count, scout_count = self._resolve_swarm_counts(constraints)
         patch_effects = self._collect_patch_effects(selected_skills)
         prompt_tweaks = patch_effects.get("promptTweaks", {})
         tool_policy = patch_effects.get("toolPolicy", {})
@@ -110,11 +158,20 @@ class WorkerAgent:
             quality_estimate = min(0.98, quality_estimate + 0.01)
 
         result = {
-            "summary": f"Task '{task.goal}' executed with {len(selected_skills)} skills.",
+            "summary": (
+                f"Task '{task.goal}' executed with {len(selected_skills)} skills, "
+                f"{worker_count} workers and {scout_count} scouts."
+            ),
             "selectedSkills": selected_skills,
             "qualityEstimate": quality_estimate,
             "llmSummary": llm_output,
             "llmMeta": llm_meta,
+            "swarmTelemetry": {
+                "workerCount": worker_count,
+                "scoutCount": scout_count,
+                "ensembleMode": "weighted-vote",
+                "ensembleRecommendation": "blend top 2 worker drafts then execute risk-aware path",
+            },
             "appliedPatchSummary": {
                 "promptTweaks": prompt_tweaks,
                 "toolPolicy": tool_policy,
@@ -146,5 +203,7 @@ class WorkerAgent:
             "completionTokens": completion_tokens,
             "totalTokens": total_tokens,
             "errorRate": error_rate,
+            "workerCount": worker_count,
+            "scoutCount": scout_count,
         }
         return result, metrics

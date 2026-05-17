@@ -5,6 +5,7 @@ from app.api.security import require_control_plane_api_key
 from app.schemas.skills import (
     CanaryStatusResponse,
     CandidateResponse,
+    CreateSkillFactoryRequest,
     CreateCandidateRequest,
     PromoteRequest,
     RollbackRequest,
@@ -21,6 +22,28 @@ router = APIRouter()
 def list_skills(pipeline: PipelineService = Depends(get_pipeline)) -> list[SkillCard]:
     skills = pipeline.list_skills()
     return [SkillCard.model_validate(skill) for skill in skills]
+
+
+@router.post("/factory", response_model=SkillCard, response_model_by_alias=True)
+def create_skill_from_factory(
+    payload: CreateSkillFactoryRequest,
+    pipeline: PipelineService = Depends(get_pipeline),
+    _: None = Depends(require_control_plane_api_key),
+) -> SkillCard:
+    try:
+        skill = pipeline.create_skill_from_factory(
+            skill_id=payload.skill_id,
+            name=payload.name,
+            description=payload.description,
+            base_strategy=payload.base_strategy,
+            mcp_connectors=payload.mcp_connectors,
+            io_schema=payload.io_schema,
+            permissions=payload.permissions,
+            cost_budget=payload.cost_budget,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SkillCard.model_validate(skill)
 
 
 @router.post("/{skill_id}/candidate", response_model=CandidateResponse, response_model_by_alias=True)

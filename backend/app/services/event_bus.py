@@ -26,7 +26,9 @@ class EventTopic:
     shadow_evaluated = "shadow.evaluated"
     feedback_received = "feedback.received"
     feedback_auto_inferred = "feedback.auto_inferred"
+    feedback_self_evolution_guarded = "feedback.self_evolution_guarded"
     worm_proposed = "worm.proposed"
+    skill_factory_created = "skill.factory_created"
     queen_promoted = "queen.promoted"
     queen_rolled_back = "queen.rolled_back"
 

@@ -19,6 +19,17 @@ class SkillCard(ApiModel):
     updated_at: datetime
 
 
+class CreateSkillFactoryRequest(ApiModel):
+    skill_id: str
+    name: str
+    description: str
+    base_strategy: str = "tool_first"
+    mcp_connectors: list[str] = Field(default_factory=list)
+    io_schema: dict[str, Any] = Field(default_factory=dict)
+    permissions: dict[str, Any] = Field(default_factory=dict)
+    cost_budget: dict[str, Any] = Field(default_factory=dict)
+
+
 class SkillDelta(ApiModel):
     target_skill: str
     change_type: str

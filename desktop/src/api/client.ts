@@ -3,6 +3,7 @@ import {
   CandidateStatusAuditView,
   CanaryStatusResponse,
   CandidateResponse,
+  CreateSkillFactoryPayload,
   ConversationTurn,
   EvolutionEventView,
   FeedbackPacket,
@@ -75,6 +76,20 @@ export function autoFeedback(
   });
 }
 
+export function ensureEvolution(
+  taskId: string,
+  onlyIfMissing = true,
+  source = "self-evolution-guard"
+): Promise<AutoFeedbackResponse> {
+  return request<AutoFeedbackResponse>(`/tasks/${taskId}/ensure-evolution`, {
+    method: "POST",
+    body: JSON.stringify({
+      onlyIfMissing,
+      source
+    })
+  });
+}
+
 export function listSkills(): Promise<SkillCard[]> {
   return request<SkillCard[]>("/skills");
 }
@@ -86,6 +101,13 @@ export function createSkillCandidate(
   return request<CandidateResponse>(`/skills/${skillId}/candidate`, {
     method: "POST",
     body: JSON.stringify({ delta })
+  });
+}
+
+export function createSkillFromFactory(payload: CreateSkillFactoryPayload): Promise<SkillCard> {
+  return request<SkillCard>("/skills/factory", {
+    method: "POST",
+    body: JSON.stringify(payload)
   });
 }
 
