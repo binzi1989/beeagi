@@ -80,3 +80,5 @@ Release notes:
 - For production, enable `APP_CONTROL_PLANE_API_KEY`.
 
 Chinese documentation: [`README.zh-CN.md`](./README.zh-CN.md)
+
+Chinese release notes: [`v0.1.0.zh-CN`](./docs/releases/v0.1.0.zh-CN.md)
