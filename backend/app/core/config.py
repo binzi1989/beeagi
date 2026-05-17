@@ -1,0 +1,61 @@
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="APP_", extra="ignore")
+
+    app_name: str = "BeeAGI Control Plane"
+    app_version: str = "0.1.0"
+    environment: str = "dev"
+    control_plane_api_key: str | None = None
+    control_plane_api_key_header: str = "X-API-Key"
+    cors_allow_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:1420",
+            "http://127.0.0.1:1420",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ]
+    )
+    cors_allow_methods: list[str] = Field(default_factory=lambda: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    cors_allow_headers: list[str] = Field(default_factory=lambda: ["*"])
+    cors_allow_credentials: bool = True
+
+    database_url: str = "sqlite:///./beeagi.db"
+    redis_url: str = "redis://localhost:6379/0"
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minio"
+    minio_secret_key: str = "minio123"
+    artifact_dir: str = "./artifacts"
+
+    local_model_endpoint: str = "http://127.0.0.1:11434"
+    enterprise_model_endpoint: str = "https://enterprise-model-gateway.local"
+    llm_mode: str = "mock"  # mock | ollama | openai_compatible | deepseek
+    llm_timeout_seconds: int = 20
+    llm_model_name: str = "qwen2.5:7b"
+    llm_api_key: str | None = None
+    deepseek_endpoint: str = "https://api.deepseek.com"
+    deepseek_model_name: str = "deepseek-v4-flash"
+    deepseek_api_key: str | None = None
+    llm_runtime_config_path: str = "./artifacts/llm_runtime_config.json"
+
+    celery_enabled: bool = False
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/2"
+
+    shadow_improvement_threshold: float = 0.08
+    canary_slice_ratio: float = 0.05
+    canary_min_feedback_count: int = 3
+    auto_rollback_quality_drop: float = 0.03
+    auto_rollback_error_rise: float = 0.02
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
