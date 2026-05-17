@@ -1,0 +1,57 @@
+name: "Feature Request"
+description: "Suggest a product or developer experience improvement"
+title: "[Feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your idea.
+        感谢你的建议，请尽量说明场景与收益。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 当前痛点
+      description: What problem are you trying to solve?
+      placeholder: Describe the current pain point
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / 方案建议
+      description: What should be added or changed?
+      placeholder: Describe your preferred solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / 替代方案
+      description: Any alternatives you considered?
+      placeholder: Alternative approaches (optional)
+    validations:
+      required: false
+  - type: dropdown
+    id: scenario
+    attributes:
+      label: Scenario / 场景
+      options:
+        - Coding
+        - Office
+        - Research
+        - Debug
+        - Data Workflow
+        - Product Design
+        - LLM Console
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected Impact / 预期收益
+      description: What benefit will this bring?
+      placeholder: User value, quality, speed, cost, etc.
+    validations:
+      required: true

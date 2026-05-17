@@ -1,5 +1,8 @@
 # BeeAGI x Codex
 
+[![CI](https://github.com/binzi1989/beeagi/actions/workflows/ci.yml/badge.svg)](https://github.com/binzi1989/beeagi/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+
 BeeAGI is a swarm-inspired multi-agent orchestration platform with a desktop control console.
 
 ## Core idea
@@ -66,6 +69,10 @@ npm run dev
 - Code of conduct: [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
 - Security policy: [`SECURITY.md`](./SECURITY.md)
 - CI workflow: `.github/workflows/ci.yml`
+
+Release notes:
+
+- [`v0.1.0`](./docs/releases/v0.1.0.md)
 
 ## Notes
 

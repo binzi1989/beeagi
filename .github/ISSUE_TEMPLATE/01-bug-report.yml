@@ -1,0 +1,65 @@
+name: "Bug Report"
+description: "Report a reproducible bug"
+title: "[Bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report.
+        请尽量提供可复现信息，方便我们快速定位。
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary / 问题概述
+      description: What happened? 发生了什么？
+      placeholder: Briefly describe the issue
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce / 复现步骤
+      description: Clear, ordered steps
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Result / 期望结果
+      placeholder: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Result / 实际结果
+      placeholder: What actually happened?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版本
+      placeholder: e.g. v0.1.0
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / 环境
+      placeholder: e.g. Windows 11, Python 3.12, Node 20
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / 截图 / 补充信息
+      description: Paste logs or screenshots if available
+      render: shell
+    validations:
+      required: false

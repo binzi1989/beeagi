@@ -1,5 +1,8 @@
 # BeeAGI x Codex
 
+[![CI](https://github.com/binzi1989/beeagi/actions/workflows/ci.yml/badge.svg)](https://github.com/binzi1989/beeagi/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+
 BeeAGI 是一个受蜂群启发的多智能体编排平台，带桌面控制台。
 
 ## 核心角色
@@ -66,6 +69,10 @@ npm run dev
 - 社区行为准则：[`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
 - 安全策略：[`SECURITY.md`](./SECURITY.md)
 - CI：`.github/workflows/ci.yml`
+
+发布说明：
+
+- [`v0.1.0`](./docs/releases/v0.1.0.md)
 
 ## 安全提示
 

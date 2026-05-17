@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Security Report / 安全问题"
+    url: "https://github.com/binzi1989/beeagi/security/policy"
+    about: "Please report security vulnerabilities privately."
+  - name: "Usage Questions / 使用问题"
+    url: "https://github.com/binzi1989/beeagi/discussions"
+    about: "Ask questions and share usage ideas."
