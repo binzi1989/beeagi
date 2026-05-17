@@ -4,6 +4,8 @@ import {
   createSkillCandidate,
   createSkillFromFactory,
   createTask,
+  downloadDeliverableArchive,
+  downloadDeliverableFile,
   ensureEvolution,
   evaluateShadowReplay,
   getLlmTokenStats,
@@ -13,6 +15,7 @@ import {
   listEvolutionEvents,
   listScoutPheromones,
   listSkills,
+  openDeliverable,
   promoteCandidate,
   rollbackSkill,
   runAutoPromote,
@@ -104,6 +107,30 @@ type SkillTemplate = {
   permissions: Record<string, unknown>;
   costBudget: Record<string, unknown>;
   deltaPatch: Record<string, unknown>;
+};
+
+type DeliverableFile = {
+  path: string;
+  absolutePath?: string;
+  kind?: string;
+  description?: string;
+  bytes?: number;
+};
+
+type DeliverableView = {
+  status: string;
+  scene: string;
+  title: string;
+  workspacePath: string;
+  source: string;
+  allowWrite: boolean;
+  allowExecute: boolean;
+  fileCount: number;
+  files: DeliverableFile[];
+  plannedFiles: DeliverableFile[];
+  primaryArtifact?: string;
+  error?: string;
+  reason?: string;
 };
 
 const SCENARIOS: ScenarioTemplate[] = [
@@ -492,6 +519,11 @@ const UI = {
     llmSummary: "模型补充说明",
     copy: "复制结果",
     copied: "已复制到剪贴板",
+    openFolder: "打开目录",
+    openFile: "打开文件",
+    downloadFile: "下载文件",
+    downloadZip: "下载ZIP",
+    downloadDone: "下载已开始",
     quickAccept: "直接采纳",
     quickRefine: "需要优化",
     quickRefineDefault: "请聚焦关键风险并给出可执行顺序。",
@@ -566,6 +598,11 @@ const UI = {
     llmSummary: "Model Notes",
     copy: "Copy",
     copied: "Copied to clipboard",
+    openFolder: "Open Folder",
+    openFile: "Open File",
+    downloadFile: "Download File",
+    downloadZip: "Download ZIP",
+    downloadDone: "Download started",
     quickAccept: "Accept",
     quickRefine: "Needs Refinement",
     quickRefineDefault: "Please focus on key risks and provide an actionable order.",
@@ -704,6 +741,9 @@ function runtimeStepStatusLabel(status: RuntimeStepStatus, locale: Locale): stri
 }
 
 function actionLabel(topic: string, locale: Locale): string {
+  if (topic === "worker.deliverable_written") {
+    return locale === "zh" ? "产物已落盘" : "Artifacts written";
+  }
   if (topic === "feedback.self_evolution_guarded") {
     return locale === "zh" ? "自进化保障" : "Self-evolution guarded";
   }
@@ -802,6 +842,9 @@ function App() {
   const [workerCount, setWorkerCount] = useState(4);
   const [scoutCount, setScoutCount] = useState(3);
   const [mcpConnectorsText, setMcpConnectorsText] = useState("filesystem,github,notion,slack");
+  const [workspaceTargetDir, setWorkspaceTargetDir] = useState("D:\\Bee2\\artifacts\\deliverables");
+  const [workspaceAllowWrite, setWorkspaceAllowWrite] = useState(true);
+  const [workspaceAllowExecute, setWorkspaceAllowExecute] = useState(false);
 
   const [factorySkillId, setFactorySkillId] = useState("skill_future_assistant");
   const [factorySkillName, setFactorySkillName] = useState("Future Assistant Skill");
@@ -869,6 +912,58 @@ function App() {
     }
     const text = payload.llmSummary;
     return typeof text === "string" ? text : "";
+  }, [latestTask]);
+
+  const deliverableView = useMemo<DeliverableView | null>(() => {
+    const payload = latestTask?.resultPayload;
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const raw = payload.deliverables as Record<string, unknown> | undefined;
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+
+    const rawFiles = raw.files;
+    const rawPlannedFiles = raw.plannedFiles;
+    const files = Array.isArray(rawFiles)
+      ? rawFiles
+          .filter((item: unknown): item is Record<string, unknown> => !!item && typeof item === "object")
+          .map((item: Record<string, unknown>) => ({
+            path: typeof item.path === "string" ? item.path : "",
+            absolutePath: typeof item.absolutePath === "string" ? item.absolutePath : undefined,
+            kind: typeof item.kind === "string" ? item.kind : undefined,
+            description: typeof item.description === "string" ? item.description : undefined,
+            bytes: typeof item.bytes === "number" ? item.bytes : undefined
+          }))
+      : [];
+
+    const plannedFiles = Array.isArray(rawPlannedFiles)
+      ? rawPlannedFiles
+          .filter((item: unknown): item is Record<string, unknown> => !!item && typeof item === "object")
+          .map((item: Record<string, unknown>) => ({
+            path: typeof item.path === "string" ? item.path : "",
+            absolutePath: typeof item.absolutePath === "string" ? item.absolutePath : undefined,
+            kind: typeof item.kind === "string" ? item.kind : undefined,
+            description: typeof item.description === "string" ? item.description : undefined
+          }))
+      : [];
+
+    return {
+      status: typeof raw.status === "string" ? raw.status : "unknown",
+      scene: typeof raw.scene === "string" ? raw.scene : "unknown",
+      title: typeof raw.title === "string" ? raw.title : "Deliverable",
+      workspacePath: typeof raw.workspacePath === "string" ? raw.workspacePath : "",
+      source: typeof raw.source === "string" ? raw.source : "none",
+      allowWrite: raw.allowWrite === true,
+      allowExecute: raw.allowExecute === true,
+      fileCount: typeof raw.fileCount === "number" ? raw.fileCount : files.length,
+      files,
+      plannedFiles,
+      primaryArtifact: typeof raw.primaryArtifact === "string" ? raw.primaryArtifact : undefined,
+      error: typeof raw.error === "string" ? raw.error : undefined,
+      reason: typeof raw.reason === "string" ? raw.reason : undefined
+    };
   }, [latestTask]);
 
   const roleStats = useMemo(
@@ -1015,6 +1110,9 @@ function App() {
     setAdoptionRate(scene.defaults.feedback.adoptionRate);
     setErrorRateRise(scene.defaults.feedback.errorRateRise);
     setConstraintsError("");
+    setWorkspaceTargetDir(`D:\\Bee2\\artifacts\\deliverables\\${scene.id}`);
+    setWorkspaceAllowWrite(true);
+    setWorkspaceAllowExecute(false);
 
     if (scene.id === "skills_factory") {
       setWorkerCount(6);
@@ -1111,12 +1209,18 @@ function App() {
 
   const mergeExecutionConstraints = (base: Record<string, unknown>) => ({
     ...base,
+    scenarioId,
     swarmConfig: {
       workerCount,
       scoutCount,
       ensembleMode: "weighted-vote"
     },
     mcpConnectors: buildMcpConnectors(),
+    workspaceBinding: {
+      targetDir: workspaceTargetDir.trim(),
+      allowWrite: workspaceAllowWrite,
+      allowExecute: workspaceAllowExecute
+    },
     skillFactoryHints: {
       preferredStrategy: factoryStrategy,
       targetSkillId: factorySkillId
@@ -1156,6 +1260,25 @@ function App() {
     const nodes = task.planGraph?.nodes ?? [];
     if (nodes.length > 0) {
       lines.push(nodes.map((node) => `- ${node.title}`).join("\n"));
+    }
+    const payload = task.resultPayload as Record<string, unknown> | undefined;
+    const rawDeliverables = payload?.deliverables as Record<string, unknown> | undefined;
+    if (rawDeliverables && typeof rawDeliverables === "object") {
+      const workspacePath = typeof rawDeliverables.workspacePath === "string" ? rawDeliverables.workspacePath : "";
+      const files = Array.isArray(rawDeliverables.files)
+        ? rawDeliverables.files.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+        : [];
+      if (workspacePath) {
+        lines.push(`Workspace: ${workspacePath}`);
+      }
+      if (files.length > 0) {
+        lines.push(
+          "Files:\n" +
+            files
+              .map((item) => `- ${String(item.path ?? "")}${item.absolutePath ? ` -> ${String(item.absolutePath)}` : ""}`)
+              .join("\n")
+        );
+      }
     }
     if (lines.length === 0) {
       lines.push(task.goal);
@@ -1791,6 +1914,71 @@ function App() {
     setToast(ui.copied);
   };
 
+  const triggerDownload = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1200);
+  };
+
+  const openDeliverableFolderNow = async () => {
+    if (!latestTask) {
+      setToast(ui.noTask);
+      return;
+    }
+    try {
+      await openDeliverable(latestTask.id, "folder");
+      setToast(locale === "zh" ? "已打开目录" : "Folder opened");
+    } catch (error) {
+      setToast(errorText(error));
+    }
+  };
+
+  const openDeliverableFileNow = async (artifactPath?: string) => {
+    if (!latestTask) {
+      setToast(ui.noTask);
+      return;
+    }
+    try {
+      await openDeliverable(latestTask.id, "file", artifactPath);
+      setToast(locale === "zh" ? "已打开文件" : "File opened");
+    } catch (error) {
+      setToast(errorText(error));
+    }
+  };
+
+  const downloadDeliverableFileNow = async (artifactPath?: string) => {
+    if (!latestTask) {
+      setToast(ui.noTask);
+      return;
+    }
+    try {
+      const { blob, fileName } = await downloadDeliverableFile(latestTask.id, artifactPath);
+      triggerDownload(blob, fileName);
+      setToast(ui.downloadDone);
+    } catch (error) {
+      setToast(errorText(error));
+    }
+  };
+
+  const downloadDeliverableArchiveNow = async () => {
+    if (!latestTask) {
+      setToast(ui.noTask);
+      return;
+    }
+    try {
+      const { blob, fileName } = await downloadDeliverableArchive(latestTask.id);
+      triggerDownload(blob, fileName);
+      setToast(ui.downloadDone);
+    } catch (error) {
+      setToast(errorText(error));
+    }
+  };
+
   const quickAcceptDeliverable = async () => {
     if (!latestTask) {
       setToast(ui.noTask);
@@ -2004,6 +2192,72 @@ function App() {
                 <>
                   <p className="hint">ID: {latestTask.id}</p>
                   <p className="result-text">{outputSummary || latestTask.goal}</p>
+                  {deliverableView && (
+                    <div className="deliverable-meta">
+                      <p className="hint">
+                        {locale === "zh" ? "场景" : "Scene"}: <strong>{deliverableView.scene}</strong> |{" "}
+                        {locale === "zh" ? "状态" : "Status"}: <strong>{deliverableView.status}</strong>
+                      </p>
+                      {deliverableView.workspacePath && (
+                        <p className="hint">
+                          {locale === "zh" ? "交付目录" : "Workspace"}: <code>{deliverableView.workspacePath}</code>
+                        </p>
+                      )}
+                      <div className="inline-actions">
+                        <button className="button" onClick={openDeliverableFolderNow}>
+                          {ui.openFolder}
+                        </button>
+                        <button className="button" onClick={downloadDeliverableArchiveNow}>
+                          {ui.downloadZip}
+                        </button>
+                        <button className="button" onClick={() => openDeliverableFileNow()}>
+                          {ui.openFile}
+                        </button>
+                        <button className="button" onClick={() => downloadDeliverableFileNow()}>
+                          {ui.downloadFile}
+                        </button>
+                      </div>
+                      {deliverableView.primaryArtifact && (
+                        <p className="hint">
+                          {locale === "zh" ? "主产物" : "Primary Artifact"}: <code>{deliverableView.primaryArtifact}</code>
+                        </p>
+                      )}
+                      {deliverableView.error && <p className="error">{deliverableView.error}</p>}
+                      {deliverableView.reason && <p className="hint">{deliverableView.reason}</p>}
+                      {deliverableView.files.length > 0 ? (
+                        <ul className="artifact-list">
+                          {deliverableView.files.map((file) => (
+                            <li key={`${file.path}-${file.absolutePath ?? ""}`}>
+                              <div className="artifact-title">
+                                <code>{file.path}</code>
+                                {file.kind && <span className="badge">{file.kind}</span>}
+                              </div>
+                              {file.absolutePath && <div className="hint">{file.absolutePath}</div>}
+                              <div className="inline-actions artifact-actions">
+                                <button className="button" onClick={() => openDeliverableFileNow(file.absolutePath ?? file.path)}>
+                                  {ui.openFile}
+                                </button>
+                                <button className="button" onClick={() => downloadDeliverableFileNow(file.absolutePath ?? file.path)}>
+                                  {ui.downloadFile}
+                                </button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : deliverableView.plannedFiles.length > 0 ? (
+                        <ul className="artifact-list artifact-list-planned">
+                          {deliverableView.plannedFiles.map((file) => (
+                            <li key={`planned-${file.path}`}>
+                              <code>{file.path}</code>
+                              <span className="hint">
+                                {locale === "zh" ? "计划产物（尚未写入）" : "Planned (not written)"}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  )}
                   {llmSummary && (
                     <p className="hint">
                       <strong>{ui.llmSummary}:</strong> {llmSummary}
@@ -2131,6 +2385,24 @@ function App() {
                 </div>
                 <label>{locale === "zh" ? "MCP连接器（逗号分隔）" : "MCP Connectors (comma separated)"}</label>
                 <input value={mcpConnectorsText} onChange={(event) => setMcpConnectorsText(event.target.value)} placeholder="filesystem,github,notion,slack" />
+
+                <label>{locale === "zh" ? "绑定本地交付目录" : "Bound Local Delivery Folder"}</label>
+                <input
+                  value={workspaceTargetDir}
+                  onChange={(event) => setWorkspaceTargetDir(event.target.value)}
+                  placeholder={locale === "zh" ? "例如: D:\\Bee2\\deliverables" : "Example: D:\\Bee2\\deliverables"}
+                />
+
+                <div className="row">
+                  <label className="toggle">
+                    <input type="checkbox" checked={workspaceAllowWrite} onChange={(event) => setWorkspaceAllowWrite(event.target.checked)} />
+                    <span>{locale === "zh" ? "允许写入实物文件" : "Allow Writing Artifacts"}</span>
+                  </label>
+                  <label className="toggle">
+                    <input type="checkbox" checked={workspaceAllowExecute} onChange={(event) => setWorkspaceAllowExecute(event.target.checked)} />
+                    <span>{locale === "zh" ? "允许后续执行" : "Allow Execute Permission"}</span>
+                  </label>
+                </div>
               </details>
 
               <div className="composer-actions">

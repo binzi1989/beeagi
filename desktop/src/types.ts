@@ -243,3 +243,9 @@ export interface LlmTokenStatsResponse {
   byModel: LlmTokenModelStat[];
   recentTasks: LlmTokenTaskStat[];
 }
+
+export interface DeliverableOpenResponse {
+  taskId: string;
+  mode: "file" | "folder";
+  openedPath: string;
+}

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from typing import Any
 
 from pydantic import Field
@@ -35,3 +36,14 @@ class TaskDetail(TaskSummary):
     plan_graph: dict[str, Any] | None = None
     result_payload: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
+
+
+class DeliverableOpenRequest(ApiModel):
+    mode: Literal["file", "folder"] = "file"
+    artifact_path: str | None = None
+
+
+class DeliverableOpenResponse(ApiModel):
+    task_id: str
+    mode: Literal["file", "folder"]
+    opened_path: str

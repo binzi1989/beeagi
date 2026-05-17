@@ -742,6 +742,41 @@ textarea {
   line-height: 1.55;
 }
 
+.deliverable-meta {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffef9;
+  padding: 10px;
+}
+
+.artifact-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.artifact-list li {
+  line-height: 1.45;
+}
+
+.artifact-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.artifact-actions {
+  margin-top: 6px;
+}
+
+.artifact-list-planned code {
+  margin-right: 6px;
+}
+
 .error {
   margin: 6px 0 0;
   color: var(--warning);

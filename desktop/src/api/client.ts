@@ -4,6 +4,7 @@ import {
   CanaryStatusResponse,
   CandidateResponse,
   CreateSkillFactoryPayload,
+  DeliverableOpenResponse,
   ConversationTurn,
   EvolutionEventView,
   FeedbackPacket,
@@ -194,4 +195,49 @@ export function updateLlmConfig(patch: LlmConfigPatch): Promise<LlmConfigView> {
 
 export function getLlmTokenStats(limit = 300): Promise<LlmTokenStatsResponse> {
   return request<LlmTokenStatsResponse>(`/llm/token-stats?limit=${limit}`);
+}
+
+export function openDeliverable(taskId: string, mode: "file" | "folder", artifactPath?: string): Promise<DeliverableOpenResponse> {
+  return request<DeliverableOpenResponse>(`/tasks/${taskId}/deliverables/open`, {
+    method: "POST",
+    body: JSON.stringify({
+      mode,
+      artifactPath: artifactPath ?? null
+    })
+  });
+}
+
+export async function downloadDeliverableFile(taskId: string, artifactPath?: string): Promise<{ blob: Blob; fileName: string }> {
+  const query = artifactPath ? `?artifactPath=${encodeURIComponent(artifactPath)}` : "";
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/deliverables/download${query}`, {
+    headers: {
+      "X-User": "desktop-user",
+      ...(CONTROL_PLANE_API_KEY ? { "X-API-Key": CONTROL_PLANE_API_KEY } : {})
+    }
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  const fileName = match?.[1] ?? "deliverable.bin";
+  return { blob, fileName };
+}
+
+export async function downloadDeliverableArchive(taskId: string): Promise<{ blob: Blob; fileName: string }> {
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/deliverables/archive`, {
+    headers: {
+      "X-User": "desktop-user",
+      ...(CONTROL_PLANE_API_KEY ? { "X-API-Key": CONTROL_PLANE_API_KEY } : {})
+    }
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  const fileName = match?.[1] ?? "deliverables.zip";
+  return { blob, fileName };
 }

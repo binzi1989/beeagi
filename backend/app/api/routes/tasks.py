@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import FileResponse
+from pathlib import Path
 
 from app.api.deps import get_pipeline
 from app.api.security import require_control_plane_api_key
@@ -9,7 +11,7 @@ from app.schemas.feedback import (
     EnsureEvolutionRequest,
     FeedbackRequest,
 )
-from app.schemas.tasks import TaskCreateRequest, TaskDetail
+from app.schemas.tasks import DeliverableOpenRequest, DeliverableOpenResponse, TaskCreateRequest, TaskDetail
 from app.services.pipeline import PipelineService
 from worker.tasks import execute_task as execute_task_async
 
@@ -100,3 +102,46 @@ def ensure_evolution(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return AutoFeedbackResponse.model_validate(result)
+
+
+@router.post("/{task_id}/deliverables/open", response_model=DeliverableOpenResponse, response_model_by_alias=True)
+def open_deliverable(
+    task_id: str,
+    payload: DeliverableOpenRequest,
+    pipeline: PipelineService = Depends(get_pipeline),
+    _: None = Depends(require_control_plane_api_key),
+) -> DeliverableOpenResponse:
+    try:
+        result = pipeline.open_deliverable(
+            task_id=task_id,
+            mode=payload.mode,
+            artifact_path=payload.artifact_path,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return DeliverableOpenResponse.model_validate(result)
+
+
+@router.get("/{task_id}/deliverables/download")
+def download_deliverable(
+    task_id: str,
+    artifact_path: str | None = Query(default=None, alias="artifactPath"),
+    pipeline: PipelineService = Depends(get_pipeline),
+) -> FileResponse:
+    try:
+        path = pipeline.resolve_deliverable_download(task_id=task_id, artifact_path=artifact_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(path=path, filename=Path(path).name, media_type="application/octet-stream")
+
+
+@router.get("/{task_id}/deliverables/archive")
+def download_deliverable_archive(
+    task_id: str,
+    pipeline: PipelineService = Depends(get_pipeline),
+) -> FileResponse:
+    try:
+        path = pipeline.build_deliverable_archive(task_id=task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(path=path, filename=Path(path).name, media_type="application/zip")

@@ -47,6 +47,33 @@ Expected behavior:
 - Feedback chain: feedback -> Worm delta proposal
 - Governance chain: shadow replay -> canary -> promote/rollback
 
+## Physical Deliverables (New)
+
+BeeAGI now writes concrete artifacts to disk instead of only showing summaries.
+
+- `coding`: full runnable project scaffold (code + tests + README)
+- `skills_factory`: `SKILL.md` package output
+- `office/research/debug/data/product/video_creator`: scenario report files (+ companion files like SQL/CSV where relevant)
+
+How to use:
+
+1. Open **Advanced Settings** in the desktop UI.
+2. Set **Bound Local Delivery Folder** (for example `D:\\Bee2\\deliverables`).
+3. Keep **Allow Writing Artifacts** enabled.
+4. Run a task. The deliverable panel shows file list + absolute paths.
+
+You can also control this through `constraints.workspaceBinding`:
+
+```json
+{
+  "workspaceBinding": {
+    "targetDir": "D:/Bee2/deliverables",
+    "allowWrite": true,
+    "allowExecute": false
+  }
+}
+```
+
 Detailed script:
 
 - [30s demo script (EN)](./docs/demo/30s-demo-script.md)
@@ -72,6 +99,9 @@ Detailed script:
 - `GET /tasks/{id}`
 - `POST /tasks/{id}/feedback`
 - `POST /tasks/{id}/auto-feedback`
+- `POST /tasks/{id}/deliverables/open`
+- `GET /tasks/{id}/deliverables/download`
+- `GET /tasks/{id}/deliverables/archive`
 - `GET /skills`
 - `POST /skills/{id}/candidate`
 - `POST /skills/{id}/promote`

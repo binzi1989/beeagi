@@ -21,6 +21,7 @@ class EventTopic:
     scout_patrolled = "scout.patrolled"
     worker_planned = "worker.planned"
     worker_completed = "worker.completed"
+    worker_deliverable_written = "worker.deliverable_written"
     canary_assigned = "canary.assigned"
     canary_observed = "canary.observed"
     shadow_evaluated = "shadow.evaluated"

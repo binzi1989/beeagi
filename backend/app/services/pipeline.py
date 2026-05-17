@@ -4,7 +4,11 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import json
+import os
+from pathlib import Path
 import re
+import subprocess
+import sys
 from typing import Any
 
 from sqlalchemy import desc
@@ -933,13 +937,85 @@ class PipelineService:
                 for row in scout_pheromone_rows
             ]
             result, metrics = self.worker.execute(task, selected, scout_pheromones=scout_pheromones)
+            deliverable_bundle = self.worker.build_deliverable_bundle(task, result)
             result["canaryAssignments"] = canary_assignments
             result["scoutPheromoneCount"] = len(scout_pheromones)
             metrics["canaryAssignedCount"] = len(canary_assignments)
             metrics["scoutPheromoneCount"] = len(scout_pheromones)
+
+            deliverables: dict[str, Any] = {
+                "scene": deliverable_bundle.get("scene", "general"),
+                "title": deliverable_bundle.get("title", "Deliverable"),
+                "status": "not_configured",
+                "source": "none",
+                "workspacePath": "",
+                "allowWrite": False,
+                "allowExecute": False,
+                "files": [],
+                "plannedFiles": [
+                    {
+                        "path": str(item.get("path", "")),
+                        "kind": str(item.get("kind", "file")),
+                        "description": str(item.get("description", "")),
+                    }
+                    for item in list(deliverable_bundle.get("files", []))
+                    if isinstance(item, dict)
+                ],
+            }
+
+            if self.artifact_store is not None:
+                binding = self.artifact_store.resolve_workspace_binding(task.id, task.constraints)
+                deliverables.update(
+                    {
+                        "status": "pending_write",
+                        "workspacePath": binding["path"],
+                        "allowWrite": bool(binding["allowWrite"]),
+                        "allowExecute": bool(binding["allowExecute"]),
+                        "source": str(binding["source"]),
+                    }
+                )
+                metrics["workspaceBound"] = bool(binding["source"] == "bound")
+                metrics["workspaceAllowWrite"] = bool(binding["allowWrite"])
+
+                if binding["allowWrite"]:
+                    try:
+                        written_files = self.artifact_store.write_deliverable_files(
+                            workspace_path=str(binding["path"]),
+                            files=list(deliverable_bundle.get("files", [])),
+                        )
+                        deliverables["status"] = "written"
+                        deliverables["files"] = written_files
+                        deliverables["fileCount"] = len(written_files)
+                        if written_files:
+                            deliverables["primaryArtifact"] = written_files[0].get("absolutePath")
+                        metrics["artifactFilesCount"] = len(written_files)
+                        self._publish(
+                            db,
+                            EventTopic.worker_deliverable_written,
+                            {
+                                "taskId": task.id,
+                                "scene": deliverables["scene"],
+                                "workspacePath": deliverables["workspacePath"],
+                                "fileCount": len(written_files),
+                            },
+                        )
+                    except Exception as exc:
+                        deliverables["status"] = "write_failed"
+                        deliverables["error"] = str(exc)
+                        metrics["artifactFilesCount"] = 0
+                        task.status = TaskStatus.failed.value
+                else:
+                    deliverables["status"] = "write_disabled"
+                    deliverables["reason"] = "workspaceBinding.allowWrite is false"
+                    metrics["artifactFilesCount"] = 0
+            else:
+                deliverables["status"] = "artifact_store_unavailable"
+
+            result["deliverables"] = deliverables
             task.result_payload = result
             task.metrics = metrics
-            task.status = TaskStatus.completed.value
+            if task.status != TaskStatus.failed.value:
+                task.status = TaskStatus.completed.value
             self._publish(
                 db,
                 EventTopic.worker_completed,
@@ -948,6 +1024,147 @@ class PipelineService:
             db.commit()
             db.refresh(task)
             return task
+
+    def _extract_deliverables_payload(self, task: Task) -> dict[str, Any]:
+        payload = task.result_payload if isinstance(task.result_payload, dict) else {}
+        deliverables = payload.get("deliverables")
+        if not isinstance(deliverables, dict):
+            raise ValueError("deliverables are not available for this task")
+        return deliverables
+
+    def _resolve_workspace_root(self, deliverables: dict[str, Any]) -> Path:
+        workspace_path = str(deliverables.get("workspacePath", "") or "").strip()
+        if not workspace_path:
+            raise ValueError("workspace path is missing")
+        root = Path(workspace_path).resolve()
+        if not root.exists():
+            raise ValueError(f"workspace path not found: {workspace_path}")
+        return root
+
+    def _resolve_deliverable_file(
+        self,
+        *,
+        deliverables: dict[str, Any],
+        artifact_path: str | None = None,
+    ) -> Path:
+        root = self._resolve_workspace_root(deliverables)
+
+        def _validate_under_workspace(candidate: Path) -> Path:
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("artifact path is outside workspace") from exc
+            if not resolved.exists() or not resolved.is_file():
+                raise ValueError(f"artifact file not found: {resolved}")
+            return resolved
+
+        if artifact_path:
+            raw = str(artifact_path).strip()
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = root / raw
+            return _validate_under_workspace(candidate)
+
+        primary = deliverables.get("primaryArtifact")
+        if isinstance(primary, str) and primary.strip():
+            return _validate_under_workspace(Path(primary))
+
+        files = deliverables.get("files", [])
+        if isinstance(files, list):
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                absolute_path = item.get("absolutePath")
+                if isinstance(absolute_path, str) and absolute_path.strip():
+                    return _validate_under_workspace(Path(absolute_path))
+
+        raise ValueError("no deliverable file available")
+
+    def _open_path_in_system(self, target: Path, reveal_file: bool = False) -> None:
+        if sys.platform.startswith("win"):
+            if reveal_file and target.is_file():
+                subprocess.Popen(["explorer", "/select,", str(target)], shell=False)
+                return
+            os.startfile(str(target))  # type: ignore[attr-defined]
+            return
+
+        if sys.platform == "darwin":
+            if reveal_file and target.is_file():
+                subprocess.Popen(["open", "-R", str(target)], shell=False)
+                return
+            subprocess.Popen(["open", str(target)], shell=False)
+            return
+
+        open_target = target.parent if reveal_file and target.is_file() else target
+        subprocess.Popen(["xdg-open", str(open_target)], shell=False)
+
+    def open_deliverable(
+        self,
+        *,
+        task_id: str,
+        mode: str = "file",
+        artifact_path: str | None = None,
+    ) -> dict[str, Any]:
+        with self.session_factory() as db:
+            task = db.get(Task, task_id)
+            if not task:
+                raise ValueError(f"task not found: {task_id}")
+            deliverables = self._extract_deliverables_payload(task)
+
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in {"file", "folder"}:
+            raise ValueError("mode must be 'file' or 'folder'")
+
+        if normalized_mode == "folder":
+            root = self._resolve_workspace_root(deliverables)
+            self._open_path_in_system(root)
+            return {
+                "taskId": task_id,
+                "mode": "folder",
+                "openedPath": str(root),
+            }
+
+        target = self._resolve_deliverable_file(deliverables=deliverables, artifact_path=artifact_path)
+        self._open_path_in_system(target, reveal_file=True)
+        return {
+            "taskId": task_id,
+            "mode": "file",
+            "openedPath": str(target),
+        }
+
+    def resolve_deliverable_download(
+        self,
+        *,
+        task_id: str,
+        artifact_path: str | None = None,
+    ) -> str:
+        with self.session_factory() as db:
+            task = db.get(Task, task_id)
+            if not task:
+                raise ValueError(f"task not found: {task_id}")
+            deliverables = self._extract_deliverables_payload(task)
+        target = self._resolve_deliverable_file(deliverables=deliverables, artifact_path=artifact_path)
+        return str(target)
+
+    def build_deliverable_archive(self, *, task_id: str) -> str:
+        if self.artifact_store is None:
+            raise ValueError("artifact store is unavailable")
+        with self.session_factory() as db:
+            task = db.get(Task, task_id)
+            if not task:
+                raise ValueError(f"task not found: {task_id}")
+            deliverables = self._extract_deliverables_payload(task)
+
+        workspace_root = self._resolve_workspace_root(deliverables)
+        files = deliverables.get("files", [])
+        if not isinstance(files, list):
+            files = []
+        return self.artifact_store.build_deliverable_archive(
+            task_id=task_id,
+            workspace_path=str(workspace_root),
+            files=[item for item in files if isinstance(item, dict)],
+        )
 
     def get_task(self, task_id: str) -> Task:
         with self.session_factory() as db:
