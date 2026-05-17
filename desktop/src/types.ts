@@ -247,6 +247,22 @@ export interface EvolutionTelemetryResponse {
   timeline: EvolutionTelemetryPoint[];
 }
 
+export interface AutonomousLifeStatus {
+  enabled: boolean;
+  running: boolean;
+  status: string;
+  startedAt?: string | null;
+  lastActivityAt: string;
+  lastCycleAt?: string | null;
+  lastCycleAgeSeconds?: number | null;
+  cycles: number;
+  lastCycleSeconds: number;
+  idleAfterSeconds: number;
+  activeIntervalSeconds: number;
+  idleIntervalSeconds: number;
+  lastSummary: Record<string, unknown>;
+}
+
 export interface LlmConfigView {
   llmMode: string;
   llmModelName: string;

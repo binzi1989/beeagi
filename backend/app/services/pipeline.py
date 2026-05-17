@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session, sessionmaker
@@ -53,6 +53,18 @@ class PipelineService:
         self.worker = WorkerAgent(model_router=model_router)
         self.worm = WormAgent()
         self.queen = QueenAgent(settings)
+        self._life_signal: Callable[[str], None] | None = None
+
+    def set_life_signal(self, callback: Callable[[str], None] | None) -> None:
+        self._life_signal = callback
+
+    def _signal_life(self, reason: str) -> None:
+        if self._life_signal is None:
+            return
+        try:
+            self._life_signal(reason)
+        except Exception:
+            return
 
     def _publish(self, db: Session, topic: str, payload: dict[str, Any]) -> None:
         self.event_bus.publish(topic, payload)
@@ -792,6 +804,7 @@ class PipelineService:
                 },
             )
             db.commit()
+        self._signal_life("feedback.auto_inferred")
 
         return {
             "status": "submitted",
@@ -857,7 +870,64 @@ class PipelineService:
                 },
             )
             db.commit()
+        self._signal_life("feedback.self_evolution_guarded")
         return result
+
+    def ensure_recent_tasks_self_evolution(
+        self,
+        *,
+        limit: int = 3,
+        created_by: str = "self-evolution-loop",
+        source: str = "self-evolution-loop",
+    ) -> dict[str, int]:
+        bounded_limit = max(1, min(limit, 20))
+        now = datetime.now(timezone.utc)
+        lookback = now - timedelta(hours=24)
+
+        with self.session_factory() as db:
+            tasks = (
+                db.query(Task)
+                .filter(Task.status == TaskStatus.completed.value, Task.updated_at >= lookback)
+                .order_by(desc(Task.updated_at))
+                .limit(max(10, bounded_limit * 5))
+                .all()
+            )
+            feedback_task_ids = {
+                row[0]
+                for row in db.query(TaskFeedback.task_id)
+                .filter(TaskFeedback.task_id.in_([task.id for task in tasks]))
+                .all()
+            }
+
+        submitted = 0
+        skipped = 0
+        failed = 0
+        for task in tasks:
+            if submitted >= bounded_limit:
+                break
+            if task.id in feedback_task_ids:
+                skipped += 1
+                continue
+            try:
+                result = self.ensure_task_self_evolution(
+                    task_id=task.id,
+                    created_by=created_by,
+                    only_if_missing=True,
+                    source=source,
+                )
+            except Exception:
+                failed += 1
+                continue
+            if result.get("status") == "submitted":
+                submitted += 1
+            else:
+                skipped += 1
+
+        return {
+            "submitted": submitted,
+            "skipped": skipped,
+            "failed": failed,
+        }
 
     def create_task(self, spec: TaskSpec, created_by: str = "anonymous", run_immediately: bool = True) -> Task:
         with self.session_factory() as db:
@@ -894,6 +964,7 @@ class PipelineService:
 
             db.commit()
             db.refresh(task)
+            self._signal_life("task.planned")
 
         if run_immediately:
             self.execute_task(task.id)
@@ -1023,6 +1094,7 @@ class PipelineService:
             )
             db.commit()
             db.refresh(task)
+            self._signal_life("task.executed")
             return task
 
     def _extract_deliverables_payload(self, task: Task) -> dict[str, Any]:
@@ -1301,6 +1373,7 @@ class PipelineService:
             )
             db.commit()
             db.refresh(candidate)
+            self._signal_life("feedback.submitted")
             return candidate
 
     def evaluate_shadow_replay(
@@ -1582,6 +1655,7 @@ class PipelineService:
 
             db.commit()
             db.refresh(candidate)
+            self._signal_life(f"candidate.{decision}")
             return candidate, decision, reason
 
     def rollback_skill(self, skill_id: str, reason: str, requested_by: str = "queen") -> Skill:
@@ -1646,6 +1720,7 @@ class PipelineService:
             )
             db.commit()
             db.refresh(skill)
+            self._signal_life("skill.rollback")
             return skill
 
     def list_scout_pheromones(
@@ -1755,6 +1830,7 @@ class PipelineService:
             }
             self._publish(db, EventTopic.scout_patrolled, summary)
             db.commit()
+            self._signal_life("scout.patrolled")
             return summary
 
     def list_events(self, limit: int = 100, topic: str | None = None) -> list[EvolutionEvent]:

@@ -73,3 +73,13 @@ def test_candidate_audits_and_hardening_report(client):
     assert 0 <= telemetry["speed"]["progressScore"] <= 100
     assert 0 <= telemetry["speed"]["velocityScore"] <= 100
     assert isinstance(telemetry["timeline"], list)
+
+    life_resp = client.get("/evolution/life")
+    assert life_resp.status_code == 200
+    life = life_resp.json()
+    assert "running" in life
+    assert "cycles" in life
+
+    touch_resp = client.post("/evolution/life/control", json={"action": "touch", "reason": "test-touch"})
+    assert touch_resp.status_code == 200
+    assert touch_resp.json()["lastSummary"] is not None

@@ -8,6 +8,7 @@ import {
   downloadDeliverableFile,
   ensureEvolution,
   evaluateShadowReplay,
+  getAutonomousLifeStatus,
   getEvolutionTelemetry,
   getLlmTokenStats,
   getCanaryStatus,
@@ -20,11 +21,14 @@ import {
   promoteCandidate,
   rollbackSkill,
   runAutoPromote,
+  runAutonomousLifeCycle,
   runScoutPatrol,
-  submitFeedback
+  submitFeedback,
+  touchAutonomousLife
 } from "./api/client";
 import {
   AutoFeedbackResponse,
+  AutonomousLifeStatus,
   CandidateStatusAuditView,
   ConversationTurn,
   EvolutionEventView,
@@ -870,6 +874,7 @@ function App() {
   const [pheromones, setPheromones] = useState<ScoutPheromoneView[]>([]);
   const [hardeningReport, setHardeningReport] = useState<HardeningReportResponse>();
   const [evolutionTelemetry, setEvolutionTelemetry] = useState<EvolutionTelemetryResponse | null>(null);
+  const [lifeStatus, setLifeStatus] = useState<AutonomousLifeStatus | null>(null);
   const [latestTask, setLatestTask] = useState<TaskDetail>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
@@ -1167,18 +1172,20 @@ function App() {
   };
 
   const refreshData = async () => {
-    const [skillsData, eventsData, auditsData, pheromoneData, pulse] = await Promise.all([
+    const [skillsData, eventsData, auditsData, pheromoneData, pulse, life] = await Promise.all([
       listSkills(),
       listEvolutionEvents(),
       listCandidateAudits(40),
       listScoutPheromones(30, true),
-      getEvolutionTelemetry(180)
+      getEvolutionTelemetry(180),
+      getAutonomousLifeStatus()
     ]);
     setSkills(skillsData);
     setEvents(eventsData);
     setAudits(auditsData);
     setPheromones(pheromoneData);
     setEvolutionTelemetry(pulse);
+    setLifeStatus(life);
   };
 
   const refreshTokenTelemetry = async () => {
@@ -1187,8 +1194,15 @@ function App() {
   };
 
   const refreshEvolutionTelemetry = async () => {
-    const pulse = await getEvolutionTelemetry(180);
+    const [pulse, life] = await Promise.all([getEvolutionTelemetry(180), getAutonomousLifeStatus()]);
     setEvolutionTelemetry(pulse);
+    setLifeStatus(life);
+  };
+
+  const nudgeAutonomousLife = (reason: string) => {
+    touchAutonomousLife(reason)
+      .then((status) => setLifeStatus(status))
+      .catch(() => undefined);
   };
 
   useEffect(() => {
@@ -1377,6 +1391,7 @@ function App() {
   };
 
   const runTaskRound = async () => {
+    nudgeAutonomousLife("ui.run-task-round");
     const constraints = parseConstraints();
     if (!constraints) {
       return;
@@ -1515,6 +1530,7 @@ function App() {
   };
 
   const runScenarioFlow = async () => {
+    nudgeAutonomousLife("ui.run-scenario-flow");
     const constraints = parseConstraints();
     if (!constraints) {
       return;
@@ -1674,6 +1690,7 @@ function App() {
   };
 
   const sendFeedback = async () => {
+    nudgeAutonomousLife("ui.submit-feedback");
     if (!latestTask) {
       setToast(ui.noTask);
       return;
@@ -1923,6 +1940,17 @@ function App() {
     }
   };
 
+  const runLifeCycleNow = async () => {
+    try {
+      const status = await runAutonomousLifeCycle("ui-manual-cycle");
+      setLifeStatus(status);
+      await refreshEvolutionTelemetry();
+      setToast(locale === "zh" ? "生命引擎已执行一轮" : "Autonomous life cycle executed");
+    } catch (error) {
+      setToast(errorText(error));
+    }
+  };
+
   const copyDeliverable = async () => {
     if (!latestTask) {
       return;
@@ -2098,6 +2126,28 @@ function App() {
           <div className="telemetry-pill">
             <span>{locale === "zh" ? "模型路数" : "Model Routes"}</span>
             <strong>{tokenStats?.byModel.length ?? 0}</strong>
+          </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "生命体状态" : "Life Status"}</span>
+            <strong>
+              {lifeStatus
+                ? lifeStatus.running
+                  ? lifeStatus.status === "idle"
+                    ? locale === "zh"
+                      ? "巡航"
+                      : "Cruise"
+                    : locale === "zh"
+                      ? "活跃"
+                      : "Active"
+                  : locale === "zh"
+                    ? "停止"
+                    : "Stopped"
+                : "-"}
+            </strong>
+          </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "生命迭代轮次" : "Life Cycles"}</span>
+            <strong>{lifeStatus?.cycles ?? 0}</strong>
           </div>
           <div className="telemetry-pill">
             <span>{locale === "zh" ? "进化进度" : "Evolution Progress"}</span>
@@ -2500,6 +2550,41 @@ function App() {
               <>
                 <section className="card side-card">
                   <h2>{locale === "zh" ? "进化脉搏" : "Evolution Pulse"}</h2>
+                  {lifeStatus && (
+                    <>
+                      <p className="hint">
+                        {locale === "zh" ? "生命体状态" : "Life Status"}:{" "}
+                        <strong>
+                          {lifeStatus.running
+                            ? lifeStatus.status === "idle"
+                              ? locale === "zh"
+                                ? "空闲巡航"
+                                : "Idle Cruise"
+                              : locale === "zh"
+                                ? "活跃代谢"
+                                : "Active Metabolism"
+                            : locale === "zh"
+                              ? "未运行"
+                              : "Stopped"}
+                        </strong>
+                      </p>
+                      <p className="hint">
+                        {locale === "zh" ? "循环次数" : "Cycles"}: {lifeStatus.cycles} |{" "}
+                        {locale === "zh" ? "最近一轮耗时" : "Last Cycle"}: {lifeStatus.lastCycleSeconds.toFixed(2)}s
+                        {lifeStatus.lastCycleAgeSeconds !== null && lifeStatus.lastCycleAgeSeconds !== undefined
+                          ? ` | ${locale === "zh" ? "距今" : "Age"}: ${lifeStatus.lastCycleAgeSeconds.toFixed(1)}s`
+                          : ""}
+                      </p>
+                      <div className="inline-actions">
+                        <button className="button" onClick={() => nudgeAutonomousLife("ui-touch-life")}>
+                          {locale === "zh" ? "唤醒生命体" : "Nudge Life"}
+                        </button>
+                        <button className="button button-primary" onClick={runLifeCycleNow}>
+                          {locale === "zh" ? "立即迭代一轮" : "Run Cycle Now"}
+                        </button>
+                      </div>
+                    </>
+                  )}
                   {evolutionTelemetry ? (
                     <>
                       <p className="hint">

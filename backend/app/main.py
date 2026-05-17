@@ -9,6 +9,7 @@ from app.core.logging import configure_logging
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.services.artifact_store import ArtifactStore
+from app.services.autonomous_life import AutonomousLifeEngine
 from app.services.event_bus import build_event_bus
 from app.services.model_router import ModelRouter
 from app.services.pipeline import PipelineService
@@ -33,7 +34,14 @@ async def lifespan(app: FastAPI):
         artifact_store=app.state.artifact_store,
         model_router=app.state.model_router,
     )
+    app.state.autonomous_life = AutonomousLifeEngine(
+        pipeline=app.state.pipeline,
+        settings=settings,
+    )
+    app.state.pipeline.set_life_signal(app.state.autonomous_life.touch)
+    await app.state.autonomous_life.start()
     yield
+    await app.state.autonomous_life.stop()
 
 
 app = FastAPI(

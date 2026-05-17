@@ -1,5 +1,6 @@
 import {
   AutoFeedbackResponse,
+  AutonomousLifeStatus,
   CandidateStatusAuditView,
   CanaryStatusResponse,
   CandidateResponse,
@@ -136,6 +137,30 @@ export function listEvolutionEvents(): Promise<EvolutionEventView[]> {
 
 export function getEvolutionTelemetry(windowMinutes = 180): Promise<EvolutionTelemetryResponse> {
   return request<EvolutionTelemetryResponse>(`/evolution/telemetry?windowMinutes=${windowMinutes}`);
+}
+
+export function getAutonomousLifeStatus(): Promise<AutonomousLifeStatus> {
+  return request<AutonomousLifeStatus>("/evolution/life");
+}
+
+export function touchAutonomousLife(reason = "ui-touch"): Promise<AutonomousLifeStatus> {
+  return request<AutonomousLifeStatus>("/evolution/life/control", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "touch",
+      reason
+    })
+  });
+}
+
+export function runAutonomousLifeCycle(reason = "ui-manual-cycle"): Promise<AutonomousLifeStatus> {
+  return request<AutonomousLifeStatus>("/evolution/life/control", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "cycle-now",
+      reason
+    })
+  });
 }
 
 export function listScoutPheromones(limit = 40, onlyActive = true): Promise<ScoutPheromoneView[]> {

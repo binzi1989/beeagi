@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import get_pipeline
 from app.api.security import require_control_plane_api_key
 from app.schemas.evolution import (
     AutoPromoteRequest,
     AutoPromoteResponse,
+    AutonomousLifeControlRequest,
+    AutonomousLifeStatus,
     CandidateStatusAuditView,
     EvolutionEventView,
     EvolutionTelemetryResponse,
@@ -120,3 +122,31 @@ def evolution_telemetry(
 ) -> EvolutionTelemetryResponse:
     payload = pipeline.build_evolution_telemetry(window_minutes=window_minutes)
     return EvolutionTelemetryResponse.model_validate(payload)
+
+
+@router.get("/life", response_model=AutonomousLifeStatus, response_model_by_alias=True)
+def get_autonomous_life_status(request: Request) -> AutonomousLifeStatus:
+    engine = getattr(request.app.state, "autonomous_life", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="autonomous life engine is unavailable")
+    return AutonomousLifeStatus.model_validate(engine.snapshot())
+
+
+@router.post("/life/control", response_model=AutonomousLifeStatus, response_model_by_alias=True)
+async def control_autonomous_life(
+    payload: AutonomousLifeControlRequest,
+    request: Request,
+    _: None = Depends(require_control_plane_api_key),
+) -> AutonomousLifeStatus:
+    engine = getattr(request.app.state, "autonomous_life", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="autonomous life engine is unavailable")
+
+    action = payload.action.strip().lower()
+    if action == "touch":
+        engine.touch(payload.reason)
+    elif action == "cycle-now":
+        await engine.run_cycle_now(reason=payload.reason)
+    else:
+        raise HTTPException(status_code=400, detail="action must be 'touch' or 'cycle-now'")
+    return AutonomousLifeStatus.model_validate(engine.snapshot())

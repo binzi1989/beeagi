@@ -173,3 +173,24 @@ class EvolutionTelemetryResponse(ApiModel):
     tasks: EvolutionTelemetryTasks
     speed: EvolutionTelemetrySpeed
     timeline: list[EvolutionTelemetryPoint]
+
+
+class AutonomousLifeStatus(ApiModel):
+    enabled: bool
+    running: bool
+    status: str
+    started_at: datetime | None = None
+    last_activity_at: datetime
+    last_cycle_at: datetime | None = None
+    last_cycle_age_seconds: float | None = None
+    cycles: int
+    last_cycle_seconds: float
+    idle_after_seconds: int
+    active_interval_seconds: int
+    idle_interval_seconds: int
+    last_summary: dict[str, Any]
+
+
+class AutonomousLifeControlRequest(ApiModel):
+    action: str = "touch"  # touch | cycle-now
+    reason: str = "manual"

@@ -1,7 +1,10 @@
 from collections.abc import Generator
+import os
 
 import pytest
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("APP_AUTONOMOUS_LIFE_ENABLED", "false")
 
 from app.main import app
 

@@ -61,6 +61,19 @@ class Settings(BaseSettings):
     scout_pheromone_min_strength: float = 0.05
     scout_patrol_sample_size: int = 30
 
+    autonomous_life_enabled: bool = True
+    autonomous_life_min_interval_seconds: int = 6
+    autonomous_life_idle_interval_seconds: int = 28
+    autonomous_life_idle_after_seconds: int = 70
+    autonomous_life_patrol_sample_active: int = 10
+    autonomous_life_patrol_sample_idle: int = 4
+    autonomous_life_self_evolution_enabled: bool = True
+    autonomous_life_evolution_limit_active: int = 3
+    autonomous_life_evolution_limit_idle: int = 1
+    autonomous_life_auto_promote_enabled: bool = True
+    autonomous_life_auto_promote_limit_active: int = 8
+    autonomous_life_auto_promote_limit_idle: int = 3
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

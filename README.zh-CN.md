@@ -79,6 +79,8 @@ npm run dev
 - `GET /skills/{id}/candidate/{candidate_id}/canary-status`
 - `GET /evolution/events`
 - `GET /evolution/telemetry`
+- `GET /evolution/life`
+- `POST /evolution/life/control`
 - `GET /evolution/pheromones`
 - `POST /evolution/scout-patrol`
 - `POST /evolution/auto-promote`
