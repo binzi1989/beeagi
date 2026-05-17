@@ -512,7 +512,8 @@ h3 {
 
 .chat-row-swarm,
 .chat-row-system,
-.chat-row-deliverable {
+.chat-row-deliverable,
+.chat-row-life {
   justify-content: flex-start;
 }
 
@@ -547,6 +548,23 @@ h3 {
 .bubble-system {
   background: var(--success-soft);
   border-color: #c4e8cc;
+}
+
+.bubble-life {
+  background: #eefaf2;
+  border-color: #a9dfba;
+}
+
+.life-report-card {
+  margin-top: 8px;
+  border: 1px dashed #b7dfc4;
+  border-radius: 10px;
+  background: #f4fcf7;
+  padding: 8px 10px;
+}
+
+.life-report-card p {
+  margin: 4px 0;
 }
 
 .bubble-streaming {

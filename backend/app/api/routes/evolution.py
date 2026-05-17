@@ -6,6 +6,7 @@ from app.schemas.evolution import (
     AutoPromoteRequest,
     AutoPromoteResponse,
     AutonomousLifeControlRequest,
+    AutonomousLifeReport,
     AutonomousLifeStatus,
     CandidateStatusAuditView,
     EvolutionEventView,
@@ -130,6 +131,18 @@ def get_autonomous_life_status(request: Request) -> AutonomousLifeStatus:
     if engine is None:
         raise HTTPException(status_code=503, detail="autonomous life engine is unavailable")
     return AutonomousLifeStatus.model_validate(engine.snapshot())
+
+
+@router.get("/life/reports", response_model=list[AutonomousLifeReport], response_model_by_alias=True)
+def get_autonomous_life_reports(
+    request: Request,
+    limit: int = Query(default=24, ge=1, le=200),
+) -> list[AutonomousLifeReport]:
+    engine = getattr(request.app.state, "autonomous_life", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="autonomous life engine is unavailable")
+    rows = engine.list_reports(limit=limit)
+    return [AutonomousLifeReport.model_validate(item) for item in rows]
 
 
 @router.post("/life/control", response_model=AutonomousLifeStatus, response_model_by_alias=True)

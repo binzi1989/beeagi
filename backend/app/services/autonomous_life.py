@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Callable
@@ -23,6 +24,8 @@ class AutonomousLifeEngine:
         self._cycles = 0
         self._last_cycle_seconds = 0.0
         self._last_summary: dict[str, Any] = {}
+        self._last_report: dict[str, Any] | None = None
+        self._reports: deque[dict[str, Any]] = deque(maxlen=240)
 
     def touch(self, reason: str = "external") -> None:
         now = datetime.now(timezone.utc)
@@ -53,10 +56,19 @@ class AutonomousLifeEngine:
                 "cycles": self._cycles,
                 "lastCycleSeconds": round(self._last_cycle_seconds, 3),
                 "lastSummary": dict(self._last_summary),
+                "lastReport": dict(self._last_report) if self._last_report else None,
+                "reportCount": len(self._reports),
                 "idleAfterSeconds": self.settings.autonomous_life_idle_after_seconds,
                 "activeIntervalSeconds": self.settings.autonomous_life_min_interval_seconds,
                 "idleIntervalSeconds": self.settings.autonomous_life_idle_interval_seconds,
             }
+
+    def list_reports(self, *, limit: int = 24) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(limit, 200))
+        with self._lock:
+            rows = list(self._reports)[-bounded_limit:]
+        rows.reverse()
+        return [dict(item) for item in rows]
 
     async def start(self) -> None:
         if not self.settings.autonomous_life_enabled:
@@ -148,20 +160,44 @@ class AutonomousLifeEngine:
                     else:
                         promoted["skipped"] += 1
         except Exception as exc:  # pragma: no cover
+            ended = datetime.now(timezone.utc)
+            report = self._compose_report(
+                cycle=self._cycles + 1,
+                reason=reason,
+                status="error",
+                is_idle=is_idle,
+                ensured=ensured,
+                patrol=patrol,
+                promoted=promoted,
+                created_at=ended,
+                error=str(exc),
+            )
             summary = {
                 "reason": reason,
                 "status": "error",
                 "error": str(exc),
                 "idle": is_idle,
+                "ensured": ensured,
+                "patrol": patrol,
+                "promotions": promoted,
+                "startedAt": started.isoformat(),
+                "endedAt": ended.isoformat(),
+                "report": report,
             }
-            with self._lock:
-                self._last_cycle_at = datetime.now(timezone.utc)
-                self._cycles += 1
-                self._last_cycle_seconds = max(0.0, (self._last_cycle_at - started).total_seconds())
-                self._last_summary = summary
+            self._record_cycle(ended=ended, started=started, summary=summary, report=report)
             return summary
 
         ended = datetime.now(timezone.utc)
+        report = self._compose_report(
+            cycle=self._cycles + 1,
+            reason=reason,
+            status="ok",
+            is_idle=is_idle,
+            ensured=ensured,
+            patrol=patrol,
+            promoted=promoted,
+            created_at=ended,
+        )
         summary = {
             "reason": reason,
             "status": "ok",
@@ -175,10 +211,119 @@ class AutonomousLifeEngine:
             "promotions": promoted,
             "startedAt": started.isoformat(),
             "endedAt": ended.isoformat(),
+            "report": report,
         }
+        self._record_cycle(ended=ended, started=started, summary=summary, report=report)
+        return summary
+
+    def _record_cycle(
+        self,
+        *,
+        ended: datetime,
+        started: datetime,
+        summary: dict[str, Any],
+        report: dict[str, Any],
+    ) -> None:
         with self._lock:
             self._last_cycle_at = ended
             self._cycles += 1
             self._last_cycle_seconds = max(0.0, (ended - started).total_seconds())
             self._last_summary = summary
-        return summary
+            self._last_report = report
+            self._reports.append(report)
+
+    def _compose_report(
+        self,
+        *,
+        cycle: int,
+        reason: str,
+        status: str,
+        is_idle: bool,
+        ensured: dict[str, int],
+        patrol: dict[str, Any],
+        promoted: dict[str, int],
+        created_at: datetime,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        ensured_submitted = int(ensured.get("submitted", 0))
+        ensured_failed = int(ensured.get("failed", 0))
+        patrol_deposited = int(patrol.get("deposited", 0))
+        patrol_sampled = int(patrol.get("sampledTasks", 0))
+        promoted_count = int(promoted.get("promoted", 0))
+        validated_count = int(promoted.get("validated", 0))
+        rejected_count = int(promoted.get("rejected", 0))
+        rollback_count = int(promoted.get("rolled_back", 0))
+
+        learned_parts: list[str] = []
+        if ensured_submitted > 0:
+            learned_parts.append(
+                f"absorbed {ensured_submitted} unattended task feedback signal(s) into evolution candidates"
+            )
+        if patrol_deposited > 0:
+            learned_parts.append(
+                f"scouts deposited {patrol_deposited} pheromone route(s) from {patrol_sampled} sampled task(s)"
+            )
+        if promoted_count > 0:
+            learned_parts.append(f"queen promoted {promoted_count} validated candidate skill(s)")
+        if validated_count > 0:
+            learned_parts.append(f"validated {validated_count} candidate(s) waiting for canary confidence")
+        if status != "ok" and error:
+            learned_parts.append(f"cycle hit an exception: {error}")
+        if not learned_parts:
+            learned_parts.append("this cycle stayed stable with no significant delta yet")
+
+        if rollback_count > 0 or rejected_count > 0:
+            next_focus = "tighten risk filters and revise low-performing deltas before promotion"
+        elif validated_count > 0 and promoted_count == 0:
+            next_focus = "collect more canary feedback and decide promote vs rollback"
+        elif ensured_submitted > 0:
+            next_focus = "replay new candidates in shadow mode and prepare canary exposure"
+        elif is_idle:
+            next_focus = "keep low-cost scouting and wait for fresh user interaction signals"
+        else:
+            next_focus = "increase scout patrol density and keep feedback absorption warm"
+
+        vitality_score = (
+            ensured_submitted * 1.2
+            + patrol_deposited * 0.12
+            + promoted_count * 1.6
+            + validated_count * 0.5
+            - rollback_count * 0.8
+            - rejected_count * 0.5
+            - ensured_failed * 0.6
+        )
+        if status != "ok":
+            vitality_score -= 1.2
+
+        if vitality_score >= 2.5:
+            vitality = "high"
+        elif vitality_score >= 0.8:
+            vitality = "medium"
+        else:
+            vitality = "low"
+
+        confidence = 0.58 + vitality_score * 0.08
+        confidence = max(0.08, min(0.98, confidence))
+
+        return {
+            "id": f"life-cycle-{cycle}",
+            "cycle": cycle,
+            "reason": reason,
+            "status": status,
+            "idle": is_idle,
+            "vitality": vitality,
+            "confidence": round(confidence, 3),
+            "learned": "; ".join(learned_parts),
+            "nextFocus": next_focus,
+            "signals": {
+                "ensuredSubmitted": ensured_submitted,
+                "ensuredFailed": ensured_failed,
+                "patrolDeposited": patrol_deposited,
+                "patrolSampledTasks": patrol_sampled,
+                "promoted": promoted_count,
+                "validated": validated_count,
+                "rejected": rejected_count,
+                "rolledBack": rollback_count,
+            },
+            "createdAt": created_at.isoformat(),
+        }

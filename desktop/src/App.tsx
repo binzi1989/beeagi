@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   autoFeedback,
   createSkillCandidate,
@@ -7,6 +7,7 @@ import {
   downloadDeliverableArchive,
   downloadDeliverableFile,
   ensureEvolution,
+  getAutonomousLifeReports,
   evaluateShadowReplay,
   getAutonomousLifeStatus,
   getEvolutionTelemetry,
@@ -28,6 +29,7 @@ import {
 } from "./api/client";
 import {
   AutoFeedbackResponse,
+  AutonomousLifeReport,
   AutonomousLifeStatus,
   CandidateStatusAuditView,
   ConversationTurn,
@@ -44,7 +46,7 @@ import LlmConsolePage from "./components/LlmConsolePage";
 
 type Locale = "zh" | "en";
 type ScenarioId = "coding" | "office" | "research" | "debug" | "data" | "product" | "skills_factory" | "video_creator";
-type ChatRole = "user" | "swarm" | "deliverable" | "system";
+type ChatRole = "user" | "swarm" | "deliverable" | "system" | "life";
 type ViewMode = "workspace" | "llm";
 type SideTab = "feedback" | "evolution" | "system";
 type RuntimeStage = "idle" | "planning" | "executing" | "feedback" | "evolving" | "completed" | "error";
@@ -788,6 +790,41 @@ function actionLabel(topic: string, locale: Locale): string {
   return locale === "zh" ? zhMap[topic] ?? topic : enMap[topic] ?? topic;
 }
 
+function lifeVitalityLabel(vitality: string, locale: Locale): string {
+  const level = vitality.toLowerCase();
+  if (level === "high") {
+    return locale === "zh" ? "高活性" : "High";
+  }
+  if (level === "medium") {
+    return locale === "zh" ? "中活性" : "Medium";
+  }
+  if (level === "low") {
+    return locale === "zh" ? "低活性" : "Low";
+  }
+  return vitality;
+}
+
+function lifeReportTitle(locale: Locale): string {
+  return locale === "zh" ? "生命体自述" : "Life Self-Report";
+}
+
+function lifeReportText(report: AutonomousLifeReport, locale: Locale): string {
+  const confidencePct = `${Math.round(report.confidence * 100)}%`;
+  const vitality = lifeVitalityLabel(report.vitality, locale);
+  if (locale === "zh") {
+    return [
+      `我刚学到：${report.learned}`,
+      `下一轮准备：${report.nextFocus}`,
+      `活性：${vitality} | 置信度：${confidencePct}`
+    ].join("\n");
+  }
+  return [
+    `I just learned: ${report.learned}`,
+    `Next cycle I will: ${report.nextFocus}`,
+    `Vitality: ${vitality} | Confidence: ${confidencePct}`
+  ].join("\n");
+}
+
 function estimateTokenCostUsd(stats: LlmTokenStatsResponse | null): number {
   if (!stats || stats.byModel.length === 0) {
     return 0;
@@ -875,8 +912,10 @@ function App() {
   const [hardeningReport, setHardeningReport] = useState<HardeningReportResponse>();
   const [evolutionTelemetry, setEvolutionTelemetry] = useState<EvolutionTelemetryResponse | null>(null);
   const [lifeStatus, setLifeStatus] = useState<AutonomousLifeStatus | null>(null);
+  const [lifeReports, setLifeReports] = useState<AutonomousLifeReport[]>([]);
   const [latestTask, setLatestTask] = useState<TaskDetail>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const seenLifeReportIds = useRef<Set<string>>(new Set());
 
   const [selectedSkillId, setSelectedSkillId] = useState("");
   const [candidateId, setCandidateId] = useState("");
@@ -1172,13 +1211,14 @@ function App() {
   };
 
   const refreshData = async () => {
-    const [skillsData, eventsData, auditsData, pheromoneData, pulse, life] = await Promise.all([
+    const [skillsData, eventsData, auditsData, pheromoneData, pulse, life, reports] = await Promise.all([
       listSkills(),
       listEvolutionEvents(),
       listCandidateAudits(40),
       listScoutPheromones(30, true),
       getEvolutionTelemetry(180),
-      getAutonomousLifeStatus()
+      getAutonomousLifeStatus(),
+      getAutonomousLifeReports(40)
     ]);
     setSkills(skillsData);
     setEvents(eventsData);
@@ -1186,6 +1226,7 @@ function App() {
     setPheromones(pheromoneData);
     setEvolutionTelemetry(pulse);
     setLifeStatus(life);
+    setLifeReports(reports);
   };
 
   const refreshTokenTelemetry = async () => {
@@ -1194,9 +1235,10 @@ function App() {
   };
 
   const refreshEvolutionTelemetry = async () => {
-    const [pulse, life] = await Promise.all([getEvolutionTelemetry(180), getAutonomousLifeStatus()]);
+    const [pulse, life, reports] = await Promise.all([getEvolutionTelemetry(180), getAutonomousLifeStatus(), getAutonomousLifeReports(24)]);
     setEvolutionTelemetry(pulse);
     setLifeStatus(life);
+    setLifeReports(reports);
   };
 
   const nudgeAutonomousLife = (reason: string) => {
@@ -1281,6 +1323,25 @@ function App() {
       }
     ]);
   };
+
+  useEffect(() => {
+    if (lifeReports.length === 0) {
+      return;
+    }
+    const rows = [...lifeReports].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    for (const report of rows) {
+      if (!report.id || seenLifeReportIds.current.has(report.id)) {
+        continue;
+      }
+      seenLifeReportIds.current.add(report.id);
+      appendChat({
+        role: "life",
+        title: lifeReportTitle(locale),
+        text: lifeReportText(report, locale),
+        time: report.createdAt
+      });
+    }
+  }, [lifeReports, locale]);
 
   const buildDeliverableText = (task: TaskDetail): string => {
     const lines: string[] = [];
@@ -2575,6 +2636,16 @@ function App() {
                           ? ` | ${locale === "zh" ? "距今" : "Age"}: ${lifeStatus.lastCycleAgeSeconds.toFixed(1)}s`
                           : ""}
                       </p>
+                      {lifeStatus.lastReport && (
+                        <div className="life-report-card">
+                          <p className="hint">
+                            <strong>{locale === "zh" ? "我刚学到" : "I just learned"}</strong>: {lifeStatus.lastReport.learned}
+                          </p>
+                          <p className="hint">
+                            <strong>{locale === "zh" ? "下一轮准备" : "Next cycle"}</strong>: {lifeStatus.lastReport.nextFocus}
+                          </p>
+                        </div>
+                      )}
                       <div className="inline-actions">
                         <button className="button" onClick={() => nudgeAutonomousLife("ui-touch-life")}>
                           {locale === "zh" ? "唤醒生命体" : "Nudge Life"}

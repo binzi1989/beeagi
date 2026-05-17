@@ -1,5 +1,6 @@
 import {
   AutoFeedbackResponse,
+  AutonomousLifeReport,
   AutonomousLifeStatus,
   CandidateStatusAuditView,
   CanaryStatusResponse,
@@ -141,6 +142,10 @@ export function getEvolutionTelemetry(windowMinutes = 180): Promise<EvolutionTel
 
 export function getAutonomousLifeStatus(): Promise<AutonomousLifeStatus> {
   return request<AutonomousLifeStatus>("/evolution/life");
+}
+
+export function getAutonomousLifeReports(limit = 24): Promise<AutonomousLifeReport[]> {
+  return request<AutonomousLifeReport[]>(`/evolution/life/reports?limit=${limit}`);
 }
 
 export function touchAutonomousLife(reason = "ui-touch"): Promise<AutonomousLifeStatus> {

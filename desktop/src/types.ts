@@ -261,6 +261,22 @@ export interface AutonomousLifeStatus {
   activeIntervalSeconds: number;
   idleIntervalSeconds: number;
   lastSummary: Record<string, unknown>;
+  lastReport?: AutonomousLifeReport | null;
+  reportCount?: number;
+}
+
+export interface AutonomousLifeReport {
+  id: string;
+  cycle: number;
+  reason: string;
+  status: string;
+  idle: boolean;
+  vitality: "high" | "medium" | "low" | string;
+  confidence: number;
+  learned: string;
+  nextFocus: string;
+  signals: Record<string, number>;
+  createdAt: string;
 }
 
 export interface LlmConfigView {

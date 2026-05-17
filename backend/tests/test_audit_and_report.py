@@ -83,3 +83,19 @@ def test_candidate_audits_and_hardening_report(client):
     touch_resp = client.post("/evolution/life/control", json={"action": "touch", "reason": "test-touch"})
     assert touch_resp.status_code == 200
     assert touch_resp.json()["lastSummary"] is not None
+
+    cycle_resp = client.post("/evolution/life/control", json={"action": "cycle-now", "reason": "test-cycle"})
+    assert cycle_resp.status_code == 200
+    cycle = cycle_resp.json()
+    assert cycle["cycles"] >= 1
+    assert cycle["lastReport"] is not None
+    assert "learned" in cycle["lastReport"]
+    assert "nextFocus" in cycle["lastReport"]
+
+    reports_resp = client.get("/evolution/life/reports?limit=5")
+    assert reports_resp.status_code == 200
+    reports = reports_resp.json()
+    assert isinstance(reports, list)
+    assert len(reports) >= 1
+    assert "learned" in reports[0]
+    assert "nextFocus" in reports[0]

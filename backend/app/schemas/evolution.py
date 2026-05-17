@@ -175,6 +175,20 @@ class EvolutionTelemetryResponse(ApiModel):
     timeline: list[EvolutionTelemetryPoint]
 
 
+class AutonomousLifeReport(ApiModel):
+    id: str
+    cycle: int
+    reason: str
+    status: str
+    idle: bool
+    vitality: str
+    confidence: float
+    learned: str
+    next_focus: str
+    signals: dict[str, int]
+    created_at: datetime
+
+
 class AutonomousLifeStatus(ApiModel):
     enabled: bool
     running: bool
@@ -189,6 +203,8 @@ class AutonomousLifeStatus(ApiModel):
     active_interval_seconds: int
     idle_interval_seconds: int
     last_summary: dict[str, Any]
+    last_report: AutonomousLifeReport | None = None
+    report_count: int = 0
 
 
 class AutonomousLifeControlRequest(ApiModel):
