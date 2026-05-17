@@ -84,6 +84,7 @@ Detailed script:
 - Scenario-driven desktop workflow (coding / office / research / debug / data / product)
 - Chat-like timeline and deliverable-first interaction
 - LLM config and token statistics console
+- Evolution pulse telemetry (progress score, velocity score, role throughput, trend timeline)
 - Shadow replay evaluator and real 5% canary allocator
 - Candidate promotion/rollback with audit trail
 - Active Scout pheromone loop:
@@ -109,6 +110,7 @@ Detailed script:
 - `POST /skills/{id}/candidate/{candidate_id}/shadow-replay`
 - `GET /skills/{id}/candidate/{candidate_id}/canary-status`
 - `GET /evolution/events`
+- `GET /evolution/telemetry`
 - `GET /evolution/pheromones`
 - `POST /evolution/scout-patrol`
 - `POST /evolution/auto-promote`

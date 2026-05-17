@@ -1764,6 +1764,210 @@ class PipelineService:
                 query = query.filter(EvolutionEvent.topic == topic)
             return query.order_by(EvolutionEvent.created_at.desc()).limit(limit).all()
 
+    def build_evolution_telemetry(self, *, window_minutes: int = 180) -> dict[str, Any]:
+        bounded_window = max(30, min(int(window_minutes), 1440))
+        now = datetime.now(timezone.utc)
+        start_24h = now - timedelta(hours=24)
+        start_60m = now - timedelta(minutes=60)
+        start_5m = now - timedelta(minutes=5)
+
+        bucket_minutes = 10 if bounded_window <= 240 else 30
+        bucket_count = max(1, min(48, bounded_window // bucket_minutes))
+        timeline_start = now - timedelta(minutes=bucket_count * bucket_minutes)
+        bucket_seconds = bucket_minutes * 60
+
+        with self.session_factory() as db:
+            events = (
+                db.query(EvolutionEvent)
+                .filter(EvolutionEvent.created_at >= timeline_start)
+                .order_by(EvolutionEvent.created_at.asc())
+                .all()
+            )
+            tasks_24h = db.query(Task).filter(Task.created_at >= start_24h).all()
+            candidates = db.query(SkillCandidate).all()
+            active_pheromones = (
+                db.query(ScoutPheromone)
+                .filter(ScoutPheromone.expires_at > now, ScoutPheromone.strength > 0)
+                .count()
+            )
+
+        def _is_since(evt: EvolutionEvent, threshold: datetime) -> bool:
+            return self._to_aware_utc(evt.created_at) >= threshold
+
+        events_60m = [evt for evt in events if _is_since(evt, start_60m)]
+        events_5m = [evt for evt in events if _is_since(evt, start_5m)]
+
+        proposals_60m = sum(1 for evt in events_60m if evt.topic == EventTopic.worm_proposed)
+        promotions_60m = sum(1 for evt in events_60m if evt.topic == EventTopic.queen_promoted)
+        rollbacks_60m = sum(1 for evt in events_60m if evt.topic == EventTopic.queen_rolled_back)
+        patrols_60m = sum(1 for evt in events_60m if evt.topic == EventTopic.scout_patrolled)
+
+        def _count_prefix(prefix: str) -> int:
+            return sum(1 for evt in events_60m if evt.topic.startswith(prefix))
+
+        scout_events_60m = _count_prefix("scout.")
+        worker_events_60m = _count_prefix("worker.") + _count_prefix("canary.") + _count_prefix("shadow.")
+        worm_events_60m = _count_prefix("worm.") + _count_prefix("skill.")
+        queen_events_60m = _count_prefix("queen.")
+        feedback_events_60m = _count_prefix("feedback.")
+        system_events_60m = max(
+            0,
+            len(events_60m)
+            - scout_events_60m
+            - worker_events_60m
+            - worm_events_60m
+            - queen_events_60m
+            - feedback_events_60m,
+        )
+
+        status_counts = {
+            CandidateStatus.proposed.value: 0,
+            CandidateStatus.validated.value: 0,
+            CandidateStatus.promoted.value: 0,
+            CandidateStatus.rejected.value: 0,
+            CandidateStatus.rolled_back.value: 0,
+        }
+        for candidate in candidates:
+            if candidate.status in status_counts:
+                status_counts[candidate.status] += 1
+
+        total_candidates = len(candidates)
+        validation_ratio = (
+            (status_counts[CandidateStatus.validated.value] + status_counts[CandidateStatus.promoted.value])
+            / max(1, total_candidates)
+        )
+        promotion_ratio = status_counts[CandidateStatus.promoted.value] / max(1, total_candidates)
+        rollback_ratio = status_counts[CandidateStatus.rolled_back.value] / max(
+            1,
+            status_counts[CandidateStatus.promoted.value] + status_counts[CandidateStatus.rolled_back.value],
+        )
+
+        completed_24h = sum(1 for task in tasks_24h if task.status == TaskStatus.completed.value)
+        failed_24h = sum(1 for task in tasks_24h if task.status == TaskStatus.failed.value)
+        considered_24h = max(1, completed_24h + failed_24h)
+        success_rate_24h = completed_24h / considered_24h
+
+        durations: list[float] = []
+        for task in tasks_24h:
+            metrics = task.metrics if isinstance(task.metrics, dict) else {}
+            duration = metrics.get("durationMs")
+            if duration is None:
+                continue
+            try:
+                parsed = float(duration)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                durations.append(parsed)
+        avg_duration_ms_24h = sum(durations) / len(durations) if durations else 0.0
+        tasks_per_hour_24h = len(tasks_24h) / 24.0
+
+        decision_minutes: list[float] = []
+        decision_statuses = {
+            CandidateStatus.promoted.value,
+            CandidateStatus.rejected.value,
+            CandidateStatus.rolled_back.value,
+        }
+        for candidate in candidates:
+            if candidate.status not in decision_statuses:
+                continue
+            candidate_updated = self._to_aware_utc(candidate.updated_at)
+            if candidate_updated < start_24h:
+                continue
+            candidate_created = self._to_aware_utc(candidate.created_at)
+            delta_minutes = (candidate_updated - candidate_created).total_seconds() / 60.0
+            if delta_minutes >= 0:
+                decision_minutes.append(delta_minutes)
+        avg_decision_minutes_24h = sum(decision_minutes) / len(decision_minutes) if decision_minutes else 0.0
+
+        events_per_minute_5m = len(events_5m) / 5.0
+        progress_score = self._clamp(
+            success_rate_24h * 45.0
+            + min(20.0, promotion_ratio * 100.0 * 0.3 + validation_ratio * 100.0 * 0.1)
+            + min(20.0, events_per_minute_5m * 12.0)
+            + max(0.0, 15.0 - rollback_ratio * 30.0),
+            0.0,
+            100.0,
+        )
+        velocity_score = self._clamp(
+            events_per_minute_5m * 40.0
+            + proposals_60m * 1.2
+            + promotions_60m * 4.0
+            - rollbacks_60m * 3.0,
+            0.0,
+            100.0,
+        )
+
+        timeline = []
+        for idx in range(bucket_count):
+            bucket_start = timeline_start + timedelta(minutes=idx * bucket_minutes)
+            timeline.append(
+                {
+                    "bucket": bucket_start.isoformat(),
+                    "events": 0,
+                    "promotions": 0,
+                    "proposals": 0,
+                }
+            )
+
+        for evt in events:
+            event_time = self._to_aware_utc(evt.created_at)
+            if event_time < timeline_start:
+                continue
+            delta_seconds = (event_time - timeline_start).total_seconds()
+            idx = int(delta_seconds // bucket_seconds)
+            idx = max(0, min(bucket_count - 1, idx))
+            timeline[idx]["events"] += 1
+            if evt.topic == EventTopic.queen_promoted:
+                timeline[idx]["promotions"] += 1
+            if evt.topic == EventTopic.worm_proposed:
+                timeline[idx]["proposals"] += 1
+
+        return {
+            "generated_at": now,
+            "window_minutes": bounded_window,
+            "active_pheromones": int(active_pheromones),
+            "roles": {
+                "scout_events_60m": scout_events_60m,
+                "worker_events_60m": worker_events_60m,
+                "worm_events_60m": worm_events_60m,
+                "queen_events_60m": queen_events_60m,
+                "feedback_events_60m": feedback_events_60m,
+                "system_events_60m": system_events_60m,
+            },
+            "funnel": {
+                "proposed": status_counts[CandidateStatus.proposed.value],
+                "validated": status_counts[CandidateStatus.validated.value],
+                "promoted": status_counts[CandidateStatus.promoted.value],
+                "rejected": status_counts[CandidateStatus.rejected.value],
+                "rolled_back": status_counts[CandidateStatus.rolled_back.value],
+                "total_candidates": total_candidates,
+                "validation_ratio": round(validation_ratio, 4),
+                "promotion_ratio": round(promotion_ratio, 4),
+                "rollback_ratio": round(rollback_ratio, 4),
+            },
+            "tasks": {
+                "total_24h": len(tasks_24h),
+                "completed_24h": completed_24h,
+                "failed_24h": failed_24h,
+                "success_rate_24h": round(success_rate_24h, 4),
+                "avg_duration_ms_24h": round(avg_duration_ms_24h, 2),
+                "tasks_per_hour_24h": round(tasks_per_hour_24h, 3),
+            },
+            "speed": {
+                "events_last_5m": len(events_5m),
+                "events_per_minute_5m": round(events_per_minute_5m, 3),
+                "proposals_last_60m": proposals_60m,
+                "promotions_last_60m": promotions_60m,
+                "rollbacks_last_60m": rollbacks_60m,
+                "patrols_last_60m": patrols_60m,
+                "avg_decision_minutes_24h": round(avg_decision_minutes_24h, 3),
+                "progress_score": round(progress_score, 2),
+                "velocity_score": round(velocity_score, 2),
+            },
+            "timeline": timeline,
+        }
+
     def get_token_statistics(self, *, limit: int = 300) -> dict[str, Any]:
         bounded_limit = max(1, min(limit, 5000))
         with self.session_factory() as db:

@@ -120,7 +120,7 @@ h1 {
   top: 10px;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -771,6 +771,80 @@ textarea {
 
 .artifact-actions {
   margin-top: 6px;
+}
+
+.pulse-metric {
+  margin-top: 8px;
+}
+
+.pulse-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pulse-bar {
+  margin-top: 4px;
+  height: 8px;
+  border-radius: 999px;
+  background: #eef3fb;
+  border: 1px solid #d7e0ed;
+  overflow: hidden;
+}
+
+.pulse-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #a6d8af 0%, #41a35a 100%);
+}
+
+.pulse-bar-velocity span {
+  background: linear-gradient(90deg, #95bfff 0%, #2f6fe3 100%);
+}
+
+.role-throughput-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.role-throughput-grid span {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f9fd;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.pulse-timeline {
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdff;
+  height: 70px;
+  padding: 6px;
+  display: grid;
+  grid-template-columns: repeat(18, minmax(0, 1fr));
+  gap: 4px;
+  align-items: end;
+}
+
+.pulse-timeline-col {
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.pulse-timeline-col span {
+  display: block;
+  width: 100%;
+  border-radius: 5px 5px 2px 2px;
+  background: linear-gradient(180deg, #8bb8ff 0%, #3f79e6 100%);
+  min-height: 6px;
 }
 
 .artifact-list-planned code {

@@ -78,6 +78,7 @@ npm run dev
 - `POST /skills/{id}/candidate/{candidate_id}/shadow-replay`
 - `GET /skills/{id}/candidate/{candidate_id}/canary-status`
 - `GET /evolution/events`
+- `GET /evolution/telemetry`
 - `GET /evolution/pheromones`
 - `POST /evolution/scout-patrol`
 - `POST /evolution/auto-promote`

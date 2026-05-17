@@ -113,3 +113,63 @@ class HardeningReportResponse(ApiModel):
     summary: HardeningSummary
     checks: list[HardeningCheck]
     missing_topics: list[str]
+
+
+class EvolutionTelemetryRoles(ApiModel):
+    scout_events_60m: int
+    worker_events_60m: int
+    worm_events_60m: int
+    queen_events_60m: int
+    feedback_events_60m: int
+    system_events_60m: int
+
+
+class EvolutionTelemetryFunnel(ApiModel):
+    proposed: int
+    validated: int
+    promoted: int
+    rejected: int
+    rolled_back: int
+    total_candidates: int
+    validation_ratio: float
+    promotion_ratio: float
+    rollback_ratio: float
+
+
+class EvolutionTelemetryTasks(ApiModel):
+    total_24h: int
+    completed_24h: int
+    failed_24h: int
+    success_rate_24h: float
+    avg_duration_ms_24h: float
+    tasks_per_hour_24h: float
+
+
+class EvolutionTelemetrySpeed(ApiModel):
+    events_last_5m: int
+    events_per_minute_5m: float
+    proposals_last_60m: int
+    promotions_last_60m: int
+    rollbacks_last_60m: int
+    patrols_last_60m: int
+    avg_decision_minutes_24h: float
+    progress_score: float
+    velocity_score: float
+
+
+class EvolutionTelemetryPoint(ApiModel):
+    bucket: str
+    events: int
+    promotions: int
+    proposals: int
+
+
+class EvolutionTelemetryResponse(ApiModel):
+    generated_at: datetime
+    window_minutes: int
+    active_pheromones: int
+    roles: EvolutionTelemetryRoles
+    funnel: EvolutionTelemetryFunnel
+    tasks: EvolutionTelemetryTasks
+    speed: EvolutionTelemetrySpeed
+    timeline: list[EvolutionTelemetryPoint]

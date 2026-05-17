@@ -7,6 +7,7 @@ import {
   DeliverableOpenResponse,
   ConversationTurn,
   EvolutionEventView,
+  EvolutionTelemetryResponse,
   FeedbackPacket,
   HardeningReportResponse,
   ScoutPatrolResponse,
@@ -131,6 +132,10 @@ export function rollbackSkill(skillId: string, reason: string): Promise<SkillCar
 
 export function listEvolutionEvents(): Promise<EvolutionEventView[]> {
   return request<EvolutionEventView[]>("/evolution/events?limit=50");
+}
+
+export function getEvolutionTelemetry(windowMinutes = 180): Promise<EvolutionTelemetryResponse> {
+  return request<EvolutionTelemetryResponse>(`/evolution/telemetry?windowMinutes=${windowMinutes}`);
 }
 
 export function listScoutPheromones(limit = 40, onlyActive = true): Promise<ScoutPheromoneView[]> {

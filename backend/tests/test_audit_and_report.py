@@ -65,3 +65,11 @@ def test_candidate_audits_and_hardening_report(client):
     assert report["summary"]["skillCount"] >= 1
     assert report["summary"]["recentAuditCount"] >= 1
     assert isinstance(report["checks"], list)
+
+    telemetry_resp = client.get("/evolution/telemetry?windowMinutes=180")
+    assert telemetry_resp.status_code == 200
+    telemetry = telemetry_resp.json()
+    assert telemetry["windowMinutes"] == 180
+    assert 0 <= telemetry["speed"]["progressScore"] <= 100
+    assert 0 <= telemetry["speed"]["velocityScore"] <= 100
+    assert isinstance(telemetry["timeline"], list)

@@ -8,6 +8,7 @@ import {
   downloadDeliverableFile,
   ensureEvolution,
   evaluateShadowReplay,
+  getEvolutionTelemetry,
   getLlmTokenStats,
   getCanaryStatus,
   getHardeningReport,
@@ -27,6 +28,7 @@ import {
   CandidateStatusAuditView,
   ConversationTurn,
   EvolutionEventView,
+  EvolutionTelemetryResponse,
   HardeningReportResponse,
   LlmTokenStatsResponse,
   ScoutPheromoneView,
@@ -867,6 +869,7 @@ function App() {
   const [audits, setAudits] = useState<CandidateStatusAuditView[]>([]);
   const [pheromones, setPheromones] = useState<ScoutPheromoneView[]>([]);
   const [hardeningReport, setHardeningReport] = useState<HardeningReportResponse>();
+  const [evolutionTelemetry, setEvolutionTelemetry] = useState<EvolutionTelemetryResponse | null>(null);
   const [latestTask, setLatestTask] = useState<TaskDetail>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
@@ -1018,6 +1021,17 @@ function App() {
   }, [runtimeSteps, runtimeStage, workerCount, scoutCount]);
 
   const estimatedCostUsd = useMemo(() => estimateTokenCostUsd(tokenStats), [tokenStats]);
+  const evolutionProgressScore = evolutionTelemetry?.speed.progressScore ?? 0;
+  const evolutionVelocityScore = evolutionTelemetry?.speed.velocityScore ?? 0;
+
+  const evolutionTimelineBars = useMemo(() => {
+    const points = evolutionTelemetry?.timeline ?? [];
+    const maxEvents = Math.max(1, ...points.map((item) => item.events));
+    return points.slice(-18).map((item) => ({
+      ...item,
+      heightPct: Math.max(8, Math.round((item.events / maxEvents) * 100)),
+    }));
+  }, [evolutionTelemetry]);
 
   const swimlanes = useMemo(() => {
     const laneOrder: Array<{ key: ReturnType<typeof swimlaneOfTopic>; labelZh: string; labelEn: string }> = [
@@ -1153,21 +1167,28 @@ function App() {
   };
 
   const refreshData = async () => {
-    const [skillsData, eventsData, auditsData, pheromoneData] = await Promise.all([
+    const [skillsData, eventsData, auditsData, pheromoneData, pulse] = await Promise.all([
       listSkills(),
       listEvolutionEvents(),
       listCandidateAudits(40),
-      listScoutPheromones(30, true)
+      listScoutPheromones(30, true),
+      getEvolutionTelemetry(180)
     ]);
     setSkills(skillsData);
     setEvents(eventsData);
     setAudits(auditsData);
     setPheromones(pheromoneData);
+    setEvolutionTelemetry(pulse);
   };
 
   const refreshTokenTelemetry = async () => {
     const stats = await getLlmTokenStats(200);
     setTokenStats(stats);
+  };
+
+  const refreshEvolutionTelemetry = async () => {
+    const pulse = await getEvolutionTelemetry(180);
+    setEvolutionTelemetry(pulse);
   };
 
   useEffect(() => {
@@ -1178,7 +1199,7 @@ function App() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      refreshTokenTelemetry().catch(() => undefined);
+      Promise.all([refreshTokenTelemetry(), refreshEvolutionTelemetry()]).catch(() => undefined);
     }, 8000);
     return () => window.clearInterval(timer);
   }, []);
@@ -2078,6 +2099,14 @@ function App() {
             <span>{locale === "zh" ? "模型路数" : "Model Routes"}</span>
             <strong>{tokenStats?.byModel.length ?? 0}</strong>
           </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "进化进度" : "Evolution Progress"}</span>
+            <strong>{evolutionProgressScore.toFixed(1)}%</strong>
+          </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "进化速度" : "Evolution Velocity"}</span>
+            <strong>{evolutionVelocityScore.toFixed(1)}%</strong>
+          </div>
         </div>
       )}
 
@@ -2469,6 +2498,69 @@ function App() {
 
             {sideTab === "evolution" && (
               <>
+                <section className="card side-card">
+                  <h2>{locale === "zh" ? "进化脉搏" : "Evolution Pulse"}</h2>
+                  {evolutionTelemetry ? (
+                    <>
+                      <p className="hint">
+                        {locale === "zh" ? "窗口" : "Window"}: {evolutionTelemetry.windowMinutes}m |{" "}
+                        {locale === "zh" ? "活跃信息素" : "Active Pheromones"}: {evolutionTelemetry.activePheromones}
+                      </p>
+                      <div className="pulse-metric">
+                        <div className="pulse-row">
+                          <strong>{locale === "zh" ? "进度分" : "Progress Score"}</strong>
+                          <span>{evolutionTelemetry.speed.progressScore.toFixed(1)}%</span>
+                        </div>
+                        <div className="pulse-bar">
+                          <span style={{ width: `${Math.max(2, evolutionTelemetry.speed.progressScore)}%` }} />
+                        </div>
+                      </div>
+                      <div className="pulse-metric">
+                        <div className="pulse-row">
+                          <strong>{locale === "zh" ? "速度分" : "Velocity Score"}</strong>
+                          <span>{evolutionTelemetry.speed.velocityScore.toFixed(1)}%</span>
+                        </div>
+                        <div className="pulse-bar pulse-bar-velocity">
+                          <span style={{ width: `${Math.max(2, evolutionTelemetry.speed.velocityScore)}%` }} />
+                        </div>
+                      </div>
+                      <ul className="compact-list">
+                        <li>
+                          {locale === "zh" ? "近5分钟事件/分钟" : "Events/min (5m)"}: {evolutionTelemetry.speed.eventsPerMinute5M.toFixed(2)}
+                        </li>
+                        <li>
+                          {locale === "zh" ? "近60分钟 提案/晋升" : "Proposals/Promotions (60m)"}:{" "}
+                          {evolutionTelemetry.speed.proposalsLast60M}/{evolutionTelemetry.speed.promotionsLast60M}
+                        </li>
+                        <li>
+                          {locale === "zh" ? "24h 成功率" : "24h Success Rate"}: {(evolutionTelemetry.tasks.successRate24H * 100).toFixed(1)}%
+                        </li>
+                        <li>
+                          {locale === "zh" ? "24h 平均决策时长(分钟)" : "Avg Decision Minutes (24h)"}:{" "}
+                          {evolutionTelemetry.speed.avgDecisionMinutes24H.toFixed(1)}
+                        </li>
+                      </ul>
+                      <p className="hint">{locale === "zh" ? "角色吞吐(60m)" : "Role Throughput (60m)"}</p>
+                      <div className="role-throughput-grid">
+                        <span>Scout {evolutionTelemetry.roles.scoutEvents60M}</span>
+                        <span>Worker {evolutionTelemetry.roles.workerEvents60M}</span>
+                        <span>Worm {evolutionTelemetry.roles.wormEvents60M}</span>
+                        <span>Queen {evolutionTelemetry.roles.queenEvents60M}</span>
+                      </div>
+                      <p className="hint">{locale === "zh" ? "进化趋势" : "Evolution Trend"}</p>
+                      <div className="pulse-timeline">
+                        {evolutionTimelineBars.map((item) => (
+                          <div key={item.bucket} className="pulse-timeline-col" title={`${toTimeLabel(item.bucket)} | ${item.events}`}>
+                            <span style={{ height: `${item.heightPct}%` }} />
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="hint">{locale === "zh" ? "正在加载进化脉搏..." : "Loading evolution pulse..."}</p>
+                  )}
+                </section>
+
                 <section className="card side-card">
                   <h2>{ui.swarm}</h2>
                   <p className="hint">

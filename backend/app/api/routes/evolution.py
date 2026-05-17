@@ -7,6 +7,7 @@ from app.schemas.evolution import (
     AutoPromoteResponse,
     CandidateStatusAuditView,
     EvolutionEventView,
+    EvolutionTelemetryResponse,
     HardeningReportResponse,
     ScoutPatrolRequest,
     ScoutPatrolResponse,
@@ -110,3 +111,12 @@ def auto_promote(
         skipped=decision_count["skipped"],
         outcomes=outcomes,
     )
+
+
+@router.get("/telemetry", response_model=EvolutionTelemetryResponse, response_model_by_alias=True)
+def evolution_telemetry(
+    window_minutes: int = Query(default=180, ge=30, le=1440, alias="windowMinutes"),
+    pipeline: PipelineService = Depends(get_pipeline),
+) -> EvolutionTelemetryResponse:
+    payload = pipeline.build_evolution_telemetry(window_minutes=window_minutes)
+    return EvolutionTelemetryResponse.model_validate(payload)

@@ -187,6 +187,66 @@ export interface HardeningReportResponse {
   missingTopics: string[];
 }
 
+export interface EvolutionTelemetryRoles {
+  scoutEvents60M: number;
+  workerEvents60M: number;
+  wormEvents60M: number;
+  queenEvents60M: number;
+  feedbackEvents60M: number;
+  systemEvents60M: number;
+}
+
+export interface EvolutionTelemetryFunnel {
+  proposed: number;
+  validated: number;
+  promoted: number;
+  rejected: number;
+  rolledBack: number;
+  totalCandidates: number;
+  validationRatio: number;
+  promotionRatio: number;
+  rollbackRatio: number;
+}
+
+export interface EvolutionTelemetryTasks {
+  total24H: number;
+  completed24H: number;
+  failed24H: number;
+  successRate24H: number;
+  avgDurationMs24H: number;
+  tasksPerHour24H: number;
+}
+
+export interface EvolutionTelemetrySpeed {
+  eventsLast5M: number;
+  eventsPerMinute5M: number;
+  proposalsLast60M: number;
+  promotionsLast60M: number;
+  rollbacksLast60M: number;
+  patrolsLast60M: number;
+  avgDecisionMinutes24H: number;
+  progressScore: number;
+  velocityScore: number;
+}
+
+export interface EvolutionTelemetryPoint {
+  bucket: string;
+  events: number;
+  promotions: number;
+  proposals: number;
+}
+
+export interface EvolutionTelemetryResponse {
+  generatedAt: string;
+  windowMinutes: number;
+  activePheromones: number;
+  roles: EvolutionTelemetryRoles;
+  funnel: EvolutionTelemetryFunnel;
+  tasks: EvolutionTelemetryTasks;
+  speed: EvolutionTelemetrySpeed;
+  timeline: EvolutionTelemetryPoint[];
+}
+
 export interface LlmConfigView {
   llmMode: string;
   llmModelName: string;
