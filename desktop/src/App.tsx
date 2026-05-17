@@ -808,21 +808,123 @@ function lifeReportTitle(locale: Locale): string {
   return locale === "zh" ? "生命体自述" : "Life Self-Report";
 }
 
-function lifeReportText(report: AutonomousLifeReport, locale: Locale): string {
+function lifeReportNarrative(report: AutonomousLifeReport, locale: Locale): { learned: string; next: string } {
+  const signals = report.signals ?? {};
+  const ensuredSubmitted = Number(signals.ensuredSubmitted ?? 0);
+  const ensuredFailed = Number(signals.ensuredFailed ?? 0);
+  const patrolDeposited = Number(signals.patrolDeposited ?? 0);
+  const patrolSampledTasks = Number(signals.patrolSampledTasks ?? 0);
+  const promoted = Number(signals.promoted ?? 0);
+  const validated = Number(signals.validated ?? 0);
+  const rejected = Number(signals.rejected ?? 0);
+  const rolledBack = Number(signals.rolledBack ?? 0);
+
+  const learnedParts: string[] = [];
+  if (locale === "zh") {
+    if (ensuredSubmitted > 0) {
+      learnedParts.push(`本轮吸收了 ${ensuredSubmitted} 个无人反馈任务信号并转成进化候选`);
+    }
+    if (patrolDeposited > 0) {
+      learnedParts.push(`斥候从 ${patrolSampledTasks} 个样本任务沉积了 ${patrolDeposited} 条信息素路径`);
+    }
+    if (promoted > 0) {
+      learnedParts.push(`蜂王晋升了 ${promoted} 个候选技能版本`);
+    }
+    if (validated > 0) {
+      learnedParts.push(`有 ${validated} 个候选进入待灰度确认阶段`);
+    }
+    if (ensuredFailed > 0) {
+      learnedParts.push(`发现 ${ensuredFailed} 次反馈吸收失败，需继续观察`);
+    }
+    if (learnedParts.length === 0) {
+      learnedParts.push("本轮整体稳定，尚未出现新的显著增量信号");
+    }
+
+    let next = "继续保持低成本巡航，并等待新的任务信号";
+    if (rolledBack > 0 || rejected > 0) {
+      next = "下一轮将收紧风险阈值，优先修复低表现候选后再发布";
+    } else if (validated > 0 && promoted === 0) {
+      next = "下一轮将优先收集灰度反馈，决定晋升或回滚";
+    } else if (ensuredSubmitted > 0) {
+      next = "下一轮将优先影子回放这些新候选，并准备小流量灰度";
+    } else if (patrolDeposited > 0) {
+      next = "下一轮将继续扩展侦察覆盖，联动反馈吸收链路";
+    }
+    return { learned: learnedParts.join("；"), next };
+  }
+
+  if (ensuredSubmitted > 0) {
+    learnedParts.push(`absorbed ${ensuredSubmitted} unattended-task feedback signal(s) into evolution candidates`);
+  }
+  if (patrolDeposited > 0) {
+    learnedParts.push(`scouts deposited ${patrolDeposited} pheromone route(s) from ${patrolSampledTasks} sampled task(s)`);
+  }
+  if (promoted > 0) {
+    learnedParts.push(`queen promoted ${promoted} candidate skill(s)`);
+  }
+  if (validated > 0) {
+    learnedParts.push(`${validated} candidate(s) entered waiting-for-canary state`);
+  }
+  if (ensuredFailed > 0) {
+    learnedParts.push(`${ensuredFailed} feedback-absorption failure(s) observed`);
+  }
+  if (learnedParts.length === 0) {
+    learnedParts.push("this cycle stayed stable with no significant delta yet");
+  }
+
+  let next = "keep low-cost cruising and wait for fresh task signals";
+  if (rolledBack > 0 || rejected > 0) {
+    next = "tighten risk thresholds and repair low-performing candidates before promotion";
+  } else if (validated > 0 && promoted === 0) {
+    next = "collect more canary feedback and decide promote vs rollback";
+  } else if (ensuredSubmitted > 0) {
+    next = "replay newly inferred candidates in shadow mode and prepare canary exposure";
+  } else if (patrolDeposited > 0) {
+    next = "expand scout coverage and keep feedback absorption linked";
+  }
+  return { learned: learnedParts.join("; "), next };
+}
+
+function lifeReportSignature(report: AutonomousLifeReport): string {
+  const signals = report.signals ?? {};
+  return [
+    report.status,
+    report.idle ? "1" : "0",
+    String(signals.ensuredSubmitted ?? 0),
+    String(signals.patrolDeposited ?? 0),
+    String(signals.patrolSampledTasks ?? 0),
+    String(signals.promoted ?? 0),
+    String(signals.validated ?? 0),
+    String(signals.rejected ?? 0),
+    String(signals.rolledBack ?? 0),
+    report.vitality
+  ].join("|");
+}
+
+function lifeReportText(report: AutonomousLifeReport, locale: Locale, streak = 1): string {
   const confidencePct = `${Math.round(report.confidence * 100)}%`;
   const vitality = lifeVitalityLabel(report.vitality, locale);
+  const narrative = lifeReportNarrative(report, locale);
   if (locale === "zh") {
-    return [
-      `我刚学到：${report.learned}`,
-      `下一轮准备：${report.nextFocus}`,
+    const lines = [
+      `我刚学到：${narrative.learned}`,
+      `下一轮准备：${narrative.next}`,
       `活性：${vitality} | 置信度：${confidencePct}`
-    ].join("\n");
+    ];
+    if (streak > 1) {
+      lines.push(`连续观察：同类模式已持续 ${streak} 轮`);
+    }
+    return lines.join("\n");
   }
-  return [
-    `I just learned: ${report.learned}`,
-    `Next cycle I will: ${report.nextFocus}`,
+  const lines = [
+    `I just learned: ${narrative.learned}`,
+    `Next cycle I will: ${narrative.next}`,
     `Vitality: ${vitality} | Confidence: ${confidencePct}`
-  ].join("\n");
+  ];
+  if (streak > 1) {
+    lines.push(`Continuous observation: same pattern persisted for ${streak} cycles`);
+  }
+  return lines.join("\n");
 }
 
 function estimateTokenCostUsd(stats: LlmTokenStatsResponse | null): number {
@@ -916,6 +1018,7 @@ function App() {
   const [latestTask, setLatestTask] = useState<TaskDetail>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const seenLifeReportIds = useRef<Set<string>>(new Set());
+  const lastLifeDigestRef = useRef<{ signature: string; messageId: string; streak: number } | null>(null);
 
   const [selectedSkillId, setSelectedSkillId] = useState("");
   const [candidateId, setCandidateId] = useState("");
@@ -1076,6 +1179,21 @@ function App() {
       heightPct: Math.max(8, Math.round((item.events / maxEvents) * 100)),
     }));
   }, [evolutionTelemetry]);
+
+  const swarmSkewHint = useMemo(() => {
+    if (!evolutionTelemetry) {
+      return "";
+    }
+    const roles = evolutionTelemetry.roles;
+    const scout = roles.scoutEvents60M;
+    const others = roles.workerEvents60M + roles.wormEvents60M + roles.queenEvents60M + roles.feedbackEvents60M;
+    if (scout >= 200 && others <= Math.max(2, Math.floor(scout * 0.02))) {
+      return locale === "zh"
+        ? "当前主要在自动巡航采样，执行角色还未被任务激活。提交任务后会拉起 Worker/Worm/Queen。"
+        : "System is mainly in autonomous scout cruising. Submit tasks to activate Worker/Worm/Queen.";
+    }
+    return "";
+  }, [evolutionTelemetry, locale]);
 
   const swimlanes = useMemo(() => {
     const laneOrder: Array<{ key: ReturnType<typeof swimlaneOfTopic>; labelZh: string; labelEn: string }> = [
@@ -1314,14 +1432,16 @@ function App() {
     setWorkflowLogs((prev) => [message, ...prev].slice(0, 80));
   };
 
-  const appendChat = (payload: Omit<ChatMessage, "id">) => {
+  const appendChat = (payload: Omit<ChatMessage, "id">): string => {
+    const id = `${payload.role}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setChatMessages((prev) => [
       ...prev,
       {
         ...payload,
-        id: `${payload.role}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+        id
       }
     ]);
+    return id;
   };
 
   useEffect(() => {
@@ -1334,12 +1454,36 @@ function App() {
         continue;
       }
       seenLifeReportIds.current.add(report.id);
-      appendChat({
+      const signature = lifeReportSignature(report);
+      const latest = lastLifeDigestRef.current;
+      if (latest && latest.signature === signature) {
+        const nextStreak = latest.streak + 1;
+        lastLifeDigestRef.current = { ...latest, streak: nextStreak };
+        setChatMessages((prev) =>
+          prev.map((item) =>
+            item.id === latest.messageId
+              ? {
+                  ...item,
+                  title: `${lifeReportTitle(locale)} x${nextStreak}`,
+                  text: lifeReportText(report, locale, nextStreak),
+                  time: report.createdAt
+                }
+              : item
+          )
+        );
+        continue;
+      }
+      const messageId = appendChat({
         role: "life",
         title: lifeReportTitle(locale),
-        text: lifeReportText(report, locale),
+        text: lifeReportText(report, locale, 1),
         time: report.createdAt
       });
+      lastLifeDigestRef.current = {
+        signature,
+        messageId,
+        streak: 1
+      };
     }
   }, [lifeReports, locale]);
 
@@ -2639,10 +2783,12 @@ function App() {
                       {lifeStatus.lastReport && (
                         <div className="life-report-card">
                           <p className="hint">
-                            <strong>{locale === "zh" ? "我刚学到" : "I just learned"}</strong>: {lifeStatus.lastReport.learned}
+                            <strong>{locale === "zh" ? "我刚学到" : "I just learned"}</strong>:{" "}
+                            {lifeReportNarrative(lifeStatus.lastReport, locale).learned}
                           </p>
                           <p className="hint">
-                            <strong>{locale === "zh" ? "下一轮准备" : "Next cycle"}</strong>: {lifeStatus.lastReport.nextFocus}
+                            <strong>{locale === "zh" ? "下一轮准备" : "Next cycle"}</strong>:{" "}
+                            {lifeReportNarrative(lifeStatus.lastReport, locale).next}
                           </p>
                         </div>
                       )}
@@ -2703,6 +2849,7 @@ function App() {
                         <span>Worm {evolutionTelemetry.roles.wormEvents60M}</span>
                         <span>Queen {evolutionTelemetry.roles.queenEvents60M}</span>
                       </div>
+                      {swarmSkewHint && <p className="hint">{swarmSkewHint}</p>}
                       <p className="hint">{locale === "zh" ? "进化趋势" : "Evolution Trend"}</p>
                       <div className="pulse-timeline">
                         {evolutionTimelineBars.map((item) => (
