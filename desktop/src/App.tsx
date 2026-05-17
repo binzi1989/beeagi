@@ -6,6 +6,7 @@ import {
   createTask,
   ensureEvolution,
   evaluateShadowReplay,
+  getLlmTokenStats,
   getCanaryStatus,
   getHardeningReport,
   listCandidateAudits,
@@ -24,6 +25,7 @@ import {
   ConversationTurn,
   EvolutionEventView,
   HardeningReportResponse,
+  LlmTokenStatsResponse,
   ScoutPheromoneView,
   SkillCard,
   TaskDetail,
@@ -88,6 +90,20 @@ type StreamingState = {
   text: string;
   taskId?: string;
   startedAt: string;
+};
+
+type SkillTemplate = {
+  id: string;
+  category: "code" | "video" | "research" | "ops";
+  title: { zh: string; en: string };
+  description: { zh: string; en: string };
+  suggestedScenario: ScenarioId;
+  strategy: string;
+  connectors: string[];
+  ioSchema: Record<string, unknown>;
+  permissions: Record<string, unknown>;
+  costBudget: Record<string, unknown>;
+  deltaPatch: Record<string, unknown>;
 };
 
 const SCENARIOS: ScenarioTemplate[] = [
@@ -370,6 +386,85 @@ const SCENARIOS: ScenarioTemplate[] = [
   }
 ];
 
+const SKILL_TEMPLATE_MARKET: SkillTemplate[] = [
+  {
+    id: "tpl_code_review_repair",
+    category: "code",
+    title: { zh: "代码评审修复循环", en: "Code Review-Repair Loop" },
+    description: {
+      zh: "面向编码场景，强化实现-评审-修复闭环，并自动沉淀可复用规则。",
+      en: "For coding tasks with strong implement-review-fix loops and reusable rule extraction."
+    },
+    suggestedScenario: "coding",
+    strategy: "review_repair_loop",
+    connectors: ["github", "filesystem", "linear", "slack"],
+    ioSchema: { input: ["requirement", "repoContext", "acceptance"], output: ["patch", "review", "riskChecklist"] },
+    permissions: { network: true, filesystem: "read_write" },
+    costBudget: { maxTokens: 18000 },
+    deltaPatch: {
+      promptTweaks: { mode: "strict_review", output: "patch+review+test-plan" },
+      toolPolicy: { maxRetries: 3, preferLowRiskTools: true }
+    }
+  },
+  {
+    id: "tpl_video_storyboard",
+    category: "video",
+    title: { zh: "短视频脚本分镜器", en: "Short Video Storyboarder" },
+    description: {
+      zh: "快速生成 30-90 秒短视频脚本、分镜和 CTA 变体。",
+      en: "Generates 30-90s script, storyboard and CTA variants quickly."
+    },
+    suggestedScenario: "video_creator",
+    strategy: "tree_of_thought",
+    connectors: ["canva", "figma", "google-drive", "filesystem"],
+    ioSchema: { input: ["goal", "assets", "brand"], output: ["script", "shots", "editingPlan"] },
+    permissions: { network: true, filesystem: "read_write" },
+    costBudget: { maxTokens: 16000 },
+    deltaPatch: {
+      promptTweaks: { style: "high-retention-video", format: "script+storyboard" },
+      toolPolicy: { maxRetries: 2, preferLowRiskTools: false }
+    }
+  },
+  {
+    id: "tpl_research_synthesizer",
+    category: "research",
+    title: { zh: "研究证据综合器", en: "Research Evidence Synthesizer" },
+    description: {
+      zh: "聚合检索、分析和结论，输出证据链与置信度。",
+      en: "Combines retrieval, analysis and conclusion with evidence-chain confidence."
+    },
+    suggestedScenario: "research",
+    strategy: "tool_first",
+    connectors: ["notion", "google-drive", "github", "filesystem"],
+    ioSchema: { input: ["question", "dataSources"], output: ["hypothesis", "evidence", "confidence"] },
+    permissions: { network: true, filesystem: "read" },
+    costBudget: { maxTokens: 15000 },
+    deltaPatch: {
+      promptTweaks: { format: "hypothesis-evidence-confidence", style: "analytical" },
+      toolPolicy: { maxRetries: 2, preferLowRiskTools: true }
+    }
+  },
+  {
+    id: "tpl_ops_command_center",
+    category: "ops",
+    title: { zh: "运营指挥中心技能", en: "Ops Command Center" },
+    description: {
+      zh: "统一任务分发、反馈聚合、风险排序与执行建议。",
+      en: "Unifies task dispatch, feedback aggregation, risk ranking and action suggestions."
+    },
+    suggestedScenario: "office",
+    strategy: "tool_first",
+    connectors: ["slack", "notion", "google-calendar", "filesystem"],
+    ioSchema: { input: ["objective", "materials"], output: ["brief", "actions", "riskBoard"] },
+    permissions: { network: true, filesystem: "read_write" },
+    costBudget: { maxTokens: 14000 },
+    deltaPatch: {
+      promptTweaks: { output: "brief+action-list+risk-order", tone: "executive-clear" },
+      toolPolicy: { maxRetries: 2, preferLowRiskTools: true }
+    }
+  }
+];
+
 const UI = {
   zh: {
     title: "BeeAGI 任务工作台",
@@ -647,6 +742,50 @@ function actionLabel(topic: string, locale: Locale): string {
   return locale === "zh" ? zhMap[topic] ?? topic : enMap[topic] ?? topic;
 }
 
+function estimateTokenCostUsd(stats: LlmTokenStatsResponse | null): number {
+  if (!stats || stats.byModel.length === 0) {
+    return 0;
+  }
+  const rateByProvider: Record<string, { promptPerK: number; completionPerK: number }> = {
+    deepseek: { promptPerK: 0.0004, completionPerK: 0.0012 },
+    openai: { promptPerK: 0.001, completionPerK: 0.003 },
+    openai_compatible: { promptPerK: 0.0008, completionPerK: 0.0024 },
+    enterprise: { promptPerK: 0.0012, completionPerK: 0.0035 },
+    ollama: { promptPerK: 0, completionPerK: 0 },
+    mock: { promptPerK: 0, completionPerK: 0 },
+    error: { promptPerK: 0, completionPerK: 0 },
+    unknown: { promptPerK: 0.0007, completionPerK: 0.002 }
+  };
+
+  let total = 0;
+  for (const row of stats.byModel) {
+    const provider = String(row.provider || "unknown").toLowerCase();
+    const rate = rateByProvider[provider] ?? rateByProvider.unknown;
+    total += (row.promptTokens / 1000) * rate.promptPerK;
+    total += (row.completionTokens / 1000) * rate.completionPerK;
+  }
+  return Number(total.toFixed(4));
+}
+
+function swimlaneOfTopic(topic: string): "scout" | "worker" | "worm" | "queen" | "feedback" | "system" {
+  if (topic.startsWith("scout.")) {
+    return "scout";
+  }
+  if (topic.startsWith("worker.") || topic.startsWith("shadow.") || topic.startsWith("canary.")) {
+    return "worker";
+  }
+  if (topic.startsWith("worm.") || topic.startsWith("skill.")) {
+    return "worm";
+  }
+  if (topic.startsWith("queen.")) {
+    return "queen";
+  }
+  if (topic.startsWith("feedback.")) {
+    return "feedback";
+  }
+  return "system";
+}
+
 function App() {
   const [locale, setLocale] = useState<Locale>("zh");
   const [view, setView] = useState<ViewMode>("workspace");
@@ -668,6 +807,8 @@ function App() {
   const [factorySkillName, setFactorySkillName] = useState("Future Assistant Skill");
   const [factorySkillDescription, setFactorySkillDescription] = useState("Auto-evolving skill for multi-turn delivery and review.");
   const [factoryStrategy, setFactoryStrategy] = useState("tool_first");
+  const [selectedTemplateId, setSelectedTemplateId] = useState(SKILL_TEMPLATE_MARKET[0]?.id ?? "");
+  const [templateReleaseBusy, setTemplateReleaseBusy] = useState(false);
 
   const [explicitScore, setExplicitScore] = useState(0.9);
   const [corrections, setCorrections] = useState("");
@@ -699,6 +840,7 @@ function App() {
   const [runtimeStage, setRuntimeStage] = useState<RuntimeStage>("idle");
   const [runtimeSteps, setRuntimeSteps] = useState<RuntimeStep[]>([]);
   const [streamingState, setStreamingState] = useState<StreamingState | null>(null);
+  const [tokenStats, setTokenStats] = useState<LlmTokenStatsResponse | null>(null);
 
   const scenario = useMemo(() => SCENARIOS.find((item) => item.id === scenarioId) ?? SCENARIOS[0], [scenarioId]);
   const labels = scenario.labels[locale];
@@ -766,6 +908,37 @@ function App() {
     }, 0);
     return Math.round((score / runtimeSteps.length) * 100);
   }, [runtimeSteps]);
+
+  const selectedTemplate = useMemo(
+    () => SKILL_TEMPLATE_MARKET.find((item) => item.id === selectedTemplateId) ?? SKILL_TEMPLATE_MARKET[0],
+    [selectedTemplateId]
+  );
+
+  const liveParallelism = useMemo(() => {
+    const runningSteps = runtimeSteps.filter((item) => item.status === "running").length;
+    if (runtimeStage === "executing" || runtimeStage === "planning" || runtimeStage === "evolving") {
+      return Math.max(runningSteps, workerCount + scoutCount);
+    }
+    return runningSteps;
+  }, [runtimeSteps, runtimeStage, workerCount, scoutCount]);
+
+  const estimatedCostUsd = useMemo(() => estimateTokenCostUsd(tokenStats), [tokenStats]);
+
+  const swimlanes = useMemo(() => {
+    const laneOrder: Array<{ key: ReturnType<typeof swimlaneOfTopic>; labelZh: string; labelEn: string }> = [
+      { key: "scout", labelZh: "Scout 侦察线", labelEn: "Scout Lane" },
+      { key: "worker", labelZh: "Worker 执行线", labelEn: "Worker Lane" },
+      { key: "worm", labelZh: "Worm 进化线", labelEn: "Worm Lane" },
+      { key: "queen", labelZh: "Queen 治理线", labelEn: "Queen Lane" },
+      { key: "feedback", labelZh: "反馈线", labelEn: "Feedback Lane" },
+      { key: "system", labelZh: "系统线", labelEn: "System Lane" },
+    ];
+    const recentEvents = [...events].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).slice(-30);
+    return laneOrder.map((lane) => ({
+      ...lane,
+      items: recentEvents.filter((evt) => swimlaneOfTopic(evt.topic) === lane.key)
+    }));
+  }, [events]);
 
   const buildRuntimeSteps = (executionSteps: string[]): RuntimeStep[] => {
     const execution = executionSteps.length > 0 ? executionSteps : [locale === "zh" ? "执行" : "Execute"];
@@ -894,10 +1067,22 @@ function App() {
     setPheromones(pheromoneData);
   };
 
+  const refreshTokenTelemetry = async () => {
+    const stats = await getLlmTokenStats(200);
+    setTokenStats(stats);
+  };
+
   useEffect(() => {
-    refreshData().catch((error) => setToast(errorText(error)));
+    Promise.all([refreshData(), refreshTokenTelemetry()]).catch((error) => setToast(errorText(error)));
     applyTemplate(scenario);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refreshTokenTelemetry().catch(() => undefined);
+    }, 8000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -1382,6 +1567,85 @@ function App() {
     }
   };
 
+  const applySkillTemplate = (template: SkillTemplate) => {
+    const matchedScenario = SCENARIOS.find((item) => item.id === template.suggestedScenario);
+    if (matchedScenario) {
+      setScenarioId(template.suggestedScenario);
+      applyTemplate(matchedScenario);
+    }
+    setSelectedTemplateId(template.id);
+    setFactorySkillId(`skill_${template.category}_${template.id.replace(/^tpl_/, "")}`.slice(0, 64));
+    setFactorySkillName(template.title.en);
+    setFactorySkillDescription(template.description.en);
+    setFactoryStrategy(template.strategy);
+    setMcpConnectorsText(template.connectors.join(","));
+  };
+
+  const releaseTemplateToCanary = async () => {
+    if (!selectedTemplate) {
+      return;
+    }
+
+    try {
+      setTemplateReleaseBusy(true);
+      const skillId = factorySkillId.trim().toLowerCase().replace(/\s+/g, "_");
+      let resolvedSkillId = skillId;
+
+      try {
+        const created = await createSkillFromFactory({
+          skillId,
+          name: factorySkillName,
+          description: factorySkillDescription,
+          baseStrategy: factoryStrategy,
+          mcpConnectors: buildMcpConnectors(),
+          ioSchema: selectedTemplate.ioSchema,
+          permissions: selectedTemplate.permissions,
+          costBudget: selectedTemplate.costBudget
+        });
+        resolvedSkillId = created.id;
+        appendWorkflowLog(`factory created: ${created.id}`);
+      } catch (error) {
+        const msg = errorText(error).toLowerCase();
+        if (!msg.includes("already exists")) {
+          throw error;
+        }
+        appendWorkflowLog(`factory reuse existing: ${skillId}`);
+      }
+
+      const candidate = await createSkillCandidate(resolvedSkillId, {
+        targetSkill: resolvedSkillId,
+        changeType: `template_${selectedTemplate.id}`,
+        patch: selectedTemplate.deltaPatch,
+        evidence: {
+          source: "template-market",
+          templateId: selectedTemplate.id,
+          category: selectedTemplate.category,
+          at: new Date().toISOString()
+        }
+      });
+      setCandidateId(candidate.id);
+      appendWorkflowLog(`template candidate: ${candidate.id}`);
+
+      const replay = await evaluateShadowReplay(resolvedSkillId, candidate.id, 60);
+      appendWorkflowLog(`template replay ratio=${replay.improvementRatio.toFixed(3)}`);
+
+      const decision = await promoteCandidate(resolvedSkillId, candidate.id);
+      appendWorkflowLog(`template canary decision=${decision.decision}`);
+
+      setSelectedSkillId(resolvedSkillId);
+      await refreshData();
+      setToast(
+        locale === "zh"
+          ? `模板已进入灰度链路：${decision.decision}（ratio=${replay.improvementRatio.toFixed(3)}）`
+          : `Template canary flow done: ${decision.decision} (ratio=${replay.improvementRatio.toFixed(3)})`
+      );
+    } catch (error) {
+      setToast(errorText(error));
+    } finally {
+      setTemplateReleaseBusy(false);
+    }
+  };
+
   const createSkillByFactory = async () => {
     try {
       const skill = await createSkillFromFactory({
@@ -1608,6 +1872,27 @@ function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
+      {view === "workspace" && (
+        <div className="floating-telemetry">
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "实时 Token" : "Live Tokens"}</span>
+            <strong>{tokenStats?.totalTokens ?? 0}</strong>
+          </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "估算成本(USD)" : "Est. Cost (USD)"}</span>
+            <strong>${estimatedCostUsd.toFixed(4)}</strong>
+          </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "并行度" : "Parallelism"}</span>
+            <strong>{liveParallelism}</strong>
+          </div>
+          <div className="telemetry-pill">
+            <span>{locale === "zh" ? "模型路数" : "Model Routes"}</span>
+            <strong>{tokenStats?.byModel.length ?? 0}</strong>
+          </div>
+        </div>
+      )}
+
       {view === "workspace" ? (
         <div className="studio-layout">
           <aside className="scene-rail card">
@@ -1676,6 +1961,33 @@ function App() {
                   </ul>
                 )}
               </details>
+            </section>
+
+            <section className="card swimlane-card">
+              <div className="hero-head">
+                <h2>{locale === "zh" ? "蜂群并行线程泳道" : "Swarm Parallel Swimlanes"}</h2>
+                <span className="badge">
+                  {locale === "zh" ? "并行线程" : "Threads"}: {liveParallelism}
+                </span>
+              </div>
+              <div className="swimlane-wrap">
+                {swimlanes.map((lane) => (
+                  <div key={lane.key} className="swimlane-row">
+                    <div className="swimlane-label">{locale === "zh" ? lane.labelZh : lane.labelEn}</div>
+                    <div className="swimlane-track">
+                      {lane.items.length === 0 ? (
+                        <span className="swimlane-empty">{locale === "zh" ? "暂无事件" : "No events"}</span>
+                      ) : (
+                        lane.items.map((evt) => (
+                          <span key={evt.id} className={`swimlane-event swimlane-event-${lane.key}`} title={actionLabel(evt.topic, locale)}>
+                            {actionLabel(evt.topic, locale)}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <section className="card deliverable-hero">
@@ -1946,6 +2258,33 @@ function App() {
                   <button className="button button-primary" onClick={createSkillByFactory}>
                     {locale === "zh" ? "创建技能" : "Create Skill"}
                   </button>
+                </section>
+
+                <section className="card side-card">
+                  <h2>{locale === "zh" ? "模板市场（灰度发布）" : "Template Market (Canary)"}</h2>
+                  <label>{locale === "zh" ? "选择模板" : "Choose Template"}</label>
+                  <select value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)}>
+                    {SKILL_TEMPLATE_MARKET.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>
+                        {tpl.title[locale]} ({tpl.category})
+                      </option>
+                    ))}
+                  </select>
+                  {selectedTemplate && (
+                    <div className="template-note">
+                      <strong>{selectedTemplate.title[locale]}</strong>
+                      <p>{selectedTemplate.description[locale]}</p>
+                      <small>MCP: {selectedTemplate.connectors.join(", ")}</small>
+                    </div>
+                  )}
+                  <div className="inline-actions">
+                    <button className="button" onClick={() => selectedTemplate && applySkillTemplate(selectedTemplate)}>
+                      {locale === "zh" ? "应用模板" : "Apply Template"}
+                    </button>
+                    <button className="button button-primary" onClick={releaseTemplateToCanary} disabled={templateReleaseBusy}>
+                      {templateReleaseBusy ? (locale === "zh" ? "灰度中..." : "Canary...") : locale === "zh" ? "一键灰度发布" : "One-click Canary"}
+                    </button>
+                  </div>
                 </section>
 
                 <section className="card side-card">

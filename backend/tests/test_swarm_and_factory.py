@@ -1,8 +1,12 @@
+import uuid
+
+
 def test_create_skill_from_factory(client):
+    skill_id = f"skill_test_factory_{uuid.uuid4().hex[:8]}"
     resp = client.post(
         "/skills/factory",
         json={
-            "skillId": "skill_test_factory",
+            "skillId": skill_id,
             "name": "Skill Test Factory",
             "description": "Factory-generated skill for regression test.",
             "baseStrategy": "tool_first",
@@ -14,7 +18,7 @@ def test_create_skill_from_factory(client):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["id"] == "skill_test_factory"
+    assert body["id"] == skill_id
     assert body["config"]["factory"]["mcpConnectors"] == ["github", "filesystem"]
 
 
