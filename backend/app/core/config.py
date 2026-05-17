@@ -67,12 +67,16 @@ class Settings(BaseSettings):
     autonomous_life_idle_after_seconds: int = 70
     autonomous_life_patrol_sample_active: int = 10
     autonomous_life_patrol_sample_idle: int = 4
+    autonomous_life_patrol_no_signal_interval: int = 4
     autonomous_life_self_evolution_enabled: bool = True
     autonomous_life_evolution_limit_active: int = 3
     autonomous_life_evolution_limit_idle: int = 1
     autonomous_life_auto_promote_enabled: bool = True
     autonomous_life_auto_promote_limit_active: int = 8
     autonomous_life_auto_promote_limit_idle: int = 3
+    autonomous_life_reflection_enabled: bool = True
+    autonomous_life_reflection_every_cycles: int = 3
+    autonomous_life_reflection_prompt_max_chars: int = 1200
 
 
 @lru_cache(maxsize=1)

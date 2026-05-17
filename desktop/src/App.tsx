@@ -905,28 +905,31 @@ function lifeReportText(report: AutonomousLifeReport, locale: Locale, streak = 1
   const confidencePct = `${Math.round(report.confidence * 100)}%`;
   const vitality = lifeVitalityLabel(report.vitality, locale);
   const narrative = lifeReportNarrative(report, locale);
+  const learned = String(report.learned ?? "").trim() || narrative.learned;
+  const next = String(report.nextFocus ?? "").trim() || narrative.next;
+
   if (locale === "zh") {
     const lines = [
-      `我刚学到：${narrative.learned}`,
-      `下一轮准备：${narrative.next}`,
-      `活性：${vitality} | 置信度：${confidencePct}`
+      `我刚学到：${learned}`,
+      `下一轮准备：${next}`,
+      `活性：${vitality} | 置信度：${confidencePct}`,
     ];
     if (streak > 1) {
       lines.push(`连续观察：同类模式已持续 ${streak} 轮`);
     }
     return lines.join("\n");
   }
+
   const lines = [
-    `I just learned: ${narrative.learned}`,
-    `Next cycle I will: ${narrative.next}`,
-    `Vitality: ${vitality} | Confidence: ${confidencePct}`
+    `I just learned: ${learned}`,
+    `Next cycle I will: ${next}`,
+    `Vitality: ${vitality} | Confidence: ${confidencePct}`,
   ];
   if (streak > 1) {
     lines.push(`Continuous observation: same pattern persisted for ${streak} cycles`);
   }
   return lines.join("\n");
 }
-
 function estimateTokenCostUsd(stats: LlmTokenStatsResponse | null): number {
   if (!stats || stats.byModel.length === 0) {
     return 0;
