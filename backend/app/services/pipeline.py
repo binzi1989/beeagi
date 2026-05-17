@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import json
+import re
 from typing import Any
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
-from app.models.evolution import CandidateStatusAudit, EvolutionEvent
+from app.models.evolution import CandidateStatusAudit, EvolutionEvent, ScoutPheromone
 from app.models.feedback import TaskFeedback
 from app.models.skill import CandidateStatus, Skill, SkillCandidate
 from app.models.task import Task, TaskStatus
@@ -52,6 +53,210 @@ class PipelineService:
     def _publish(self, db: Session, topic: str, payload: dict[str, Any]) -> None:
         self.event_bus.publish(topic, payload)
         db.add(EvolutionEvent(topic=topic, payload=payload))
+
+    def _clamp(self, value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(maximum, value))
+
+    def _normalize_intent_cluster(self, goal: str) -> str:
+        tokens = re.findall(r"[a-z0-9\u4e00-\u9fff]+", goal.lower())
+        if not tokens:
+            return "general"
+        return "-".join(tokens[:4])[:120]
+
+    def _to_aware_utc(self, value: datetime | None) -> datetime:
+        if value is None:
+            return datetime.now(timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _evaporate_pheromones(self, db: Session) -> tuple[int, int]:
+        now = datetime.now(timezone.utc)
+        evaporation_rate = self._clamp(self.settings.scout_pheromone_evaporation_rate, 0.0, 0.5)
+        min_strength = self._clamp(self.settings.scout_pheromone_min_strength, 0.0, 0.5)
+        rows = db.query(ScoutPheromone).all()
+
+        evaporated = 0
+        expired = 0
+        for row in rows:
+            expires_at = self._to_aware_utc(row.expires_at)
+            updated_at = self._to_aware_utc(row.updated_at)
+
+            if expires_at <= now:
+                if row.strength > 0:
+                    row.strength = 0.0
+                    expired += 1
+                continue
+
+            elapsed_hours = max(0.0, (now - updated_at).total_seconds() / 3600.0)
+            if elapsed_hours < 0.2:
+                continue
+
+            decay_factor = (1.0 - evaporation_rate) ** elapsed_hours
+            next_strength = self._clamp(row.strength * decay_factor, 0.0, 1.0)
+            if next_strength < min_strength:
+                next_strength = next_strength * 0.5
+
+            if abs(next_strength - row.strength) >= 0.005:
+                row.strength = round(next_strength, 6)
+                evaporated += 1
+
+        if evaporated > 0 or expired > 0:
+            self._publish(
+                db,
+                EventTopic.scout_pheromone_evaporated,
+                {
+                    "evaporated": evaporated,
+                    "expired": expired,
+                },
+            )
+
+        return evaporated, expired
+
+    def _deposit_scout_pheromones(
+        self,
+        *,
+        db: Session,
+        intent_cluster: str,
+        scout_report: dict[str, Any],
+    ) -> list[str]:
+        now = datetime.now(timezone.utc)
+        ttl_seconds = max(3600, self.settings.scout_pheromone_ttl_hours * 3600)
+        signals = scout_report.get("signals", [])
+        if not isinstance(signals, list):
+            return []
+
+        inserted = 0
+        updated = 0
+        pheromone_ids: list[str] = []
+        for signal in signals:
+            if not isinstance(signal, dict):
+                continue
+            source = str(signal.get("source", "scout")).strip().lower()[:120] or "scout"
+            route = str(signal.get("route", "unknown://route")).strip()[:300]
+            novelty = self._safe_float(signal.get("novelty"), fallback=0.5, minimum=0.0, maximum=1.0)
+            reliability = self._safe_float(signal.get("reliability"), fallback=0.7, minimum=0.0, maximum=1.0)
+            cost = self._safe_float(signal.get("cost"), fallback=0.1, minimum=0.0, maximum=1.0)
+            signal_strength = self._clamp(novelty * 0.35 + reliability * 0.55 - cost * 0.2, 0.0, 1.0)
+
+            row = (
+                db.query(ScoutPheromone)
+                .filter(
+                    ScoutPheromone.intent_cluster == intent_cluster,
+                    ScoutPheromone.source == source,
+                    ScoutPheromone.route == route,
+                )
+                .first()
+            )
+            if row is None:
+                row = ScoutPheromone(
+                    intent_cluster=intent_cluster,
+                    source=source,
+                    route=route,
+                    novelty=novelty,
+                    reliability=reliability,
+                    cost=cost,
+                    reward=0.0,
+                    strength=signal_strength,
+                    ttl_seconds=ttl_seconds,
+                    usage_count=0,
+                    success_count=0,
+                    failure_count=0,
+                    notes=str(signal.get("notes", "") or "")[:600] or None,
+                    metadata_json={
+                        "seed": signal,
+                        "updatedBy": "scout.scan",
+                    },
+                    last_seen_at=now,
+                    expires_at=now + timedelta(seconds=ttl_seconds),
+                )
+                db.add(row)
+                db.flush()
+                inserted += 1
+            else:
+                row.novelty = novelty
+                row.reliability = reliability
+                row.cost = cost
+                row.strength = round(self._clamp(row.strength * 0.55 + signal_strength * 0.45, 0.0, 1.0), 6)
+                row.last_seen_at = now
+                row.ttl_seconds = ttl_seconds
+                row.expires_at = now + timedelta(seconds=ttl_seconds)
+                metadata = dict(row.metadata_json or {})
+                metadata["seed"] = signal
+                metadata["updatedBy"] = "scout.scan"
+                row.metadata_json = metadata
+                updated += 1
+
+            pheromone_ids.append(row.id)
+
+        if inserted > 0 or updated > 0:
+            self._publish(
+                db,
+                EventTopic.scout_pheromone_deposited,
+                {
+                    "intentCluster": intent_cluster,
+                    "inserted": inserted,
+                    "updated": updated,
+                    "total": inserted + updated,
+                },
+            )
+        return pheromone_ids
+
+    def _select_task_pheromones(self, db: Session, task: Task) -> list[ScoutPheromone]:
+        now = datetime.now(timezone.utc)
+        cluster = self._normalize_intent_cluster(task.goal)
+        top_k = max(1, min(self.settings.scout_pheromone_top_k, 12))
+        rows = (
+            db.query(ScoutPheromone)
+            .filter(
+                ScoutPheromone.intent_cluster == cluster,
+                ScoutPheromone.expires_at > now,
+            )
+            .order_by(desc(ScoutPheromone.strength), desc(ScoutPheromone.updated_at))
+            .limit(top_k)
+            .all()
+        )
+
+        for row in rows:
+            row.usage_count += 1
+            row.last_seen_at = now
+
+        return rows
+
+    def _reward_task_pheromones(
+        self,
+        *,
+        db: Session,
+        task: Task,
+        packet: FeedbackPacket,
+    ) -> int:
+        scout_report = task.scout_report if isinstance(task.scout_report, dict) else {}
+        pheromone_ids = scout_report.get("pheromoneIds", [])
+        if not isinstance(pheromone_ids, list) or not pheromone_ids:
+            return 0
+
+        explicit_score = packet.explicit_score if packet.explicit_score is not None else 0.8
+        retry_count = float(packet.implicit_signals.get("retryCount", 0.0))
+        error_rise = float(packet.implicit_signals.get("errorRateRise", 0.0))
+        adoption = float(packet.implicit_signals.get("adoptionRate", 0.8))
+
+        reward = (explicit_score - 0.8) * 0.65 + (adoption - 0.8) * 0.25 - retry_count * 0.03 - error_rise * 0.8
+        reward = self._clamp(reward, -0.5, 0.5)
+
+        updated = 0
+        for pheromone_id in pheromone_ids:
+            row = db.get(ScoutPheromone, str(pheromone_id))
+            if not row:
+                continue
+            row.reward = round(row.reward + reward, 6)
+            row.strength = round(self._clamp(row.strength + reward * 0.25, 0.0, 1.0), 6)
+            if reward >= 0:
+                row.success_count += 1
+            else:
+                row.failure_count += 1
+            updated += 1
+
+        return updated
 
     def _audit_candidate_status(
         self,
@@ -597,6 +802,7 @@ class PipelineService:
 
     def create_task(self, spec: TaskSpec, created_by: str = "anonymous", run_immediately: bool = True) -> Task:
         with self.session_factory() as db:
+            self._evaporate_pheromones(db)
             task = Task(
                 goal=spec.goal,
                 constraints=spec.constraints,
@@ -610,6 +816,15 @@ class PipelineService:
             db.flush()
 
             scout_report = self.scout.scan(spec)
+            intent_cluster = self._normalize_intent_cluster(spec.goal)
+            pheromone_ids = self._deposit_scout_pheromones(
+                db=db,
+                intent_cluster=intent_cluster,
+                scout_report=scout_report,
+            )
+            scout_report["intentCluster"] = intent_cluster
+            scout_report["pheromoneIds"] = pheromone_ids
+            scout_report["pheromoneCount"] = len(pheromone_ids)
             task.scout_report = scout_report
             task.status = TaskStatus.planned.value
             self._publish(db, EventTopic.scout_reported, {"taskId": task.id, "report": scout_report})
@@ -650,9 +865,23 @@ class PipelineService:
                     },
                 )
 
-            result, metrics = self.worker.execute(task, selected)
+            scout_pheromone_rows = self._select_task_pheromones(db, task)
+            scout_pheromones = [
+                {
+                    "id": row.id,
+                    "route": row.route,
+                    "source": row.source,
+                    "strength": row.strength,
+                    "reliability": row.reliability,
+                    "reward": row.reward,
+                }
+                for row in scout_pheromone_rows
+            ]
+            result, metrics = self.worker.execute(task, selected, scout_pheromones=scout_pheromones)
             result["canaryAssignments"] = canary_assignments
+            result["scoutPheromoneCount"] = len(scout_pheromones)
             metrics["canaryAssignedCount"] = len(canary_assignments)
+            metrics["scoutPheromoneCount"] = len(scout_pheromones)
             task.result_payload = result
             task.metrics = metrics
             task.status = TaskStatus.completed.value
@@ -820,6 +1049,7 @@ class PipelineService:
                 {"taskId": task_id, "feedbackId": feedback.id},
             )
             self._update_canary_candidate_metrics(db=db, task=task, packet=packet)
+            rewarded_pheromones = self._reward_task_pheromones(db=db, task=task, packet=packet)
 
             base_skill = db.query(Skill).filter(Skill.status == "active").order_by(Skill.updated_at.desc()).first()
             if not base_skill:
@@ -840,6 +1070,10 @@ class PipelineService:
             )
             db.add(candidate)
             db.flush()
+            candidate.evidence = {
+                **dict(candidate.evidence or {}),
+                "scoutPheromoneRewarded": rewarded_pheromones,
+            }
             self._audit_candidate_status(
                 db=db,
                 candidate=candidate,
@@ -875,6 +1109,7 @@ class PipelineService:
                     "shadowScore": candidate.shadow_score,
                     "canaryScore": candidate.canary_score,
                     "canarySliceRatio": self.settings.canary_slice_ratio,
+                    "scoutPheromoneRewarded": rewarded_pheromones,
                 },
             )
             db.commit()
@@ -1073,6 +1308,115 @@ class PipelineService:
             db.commit()
             db.refresh(skill)
             return skill
+
+    def list_scout_pheromones(
+        self,
+        *,
+        limit: int = 100,
+        intent_cluster: str | None = None,
+        only_active: bool = True,
+    ) -> list[ScoutPheromone]:
+        bounded_limit = max(1, min(limit, 500))
+        now = datetime.now(timezone.utc)
+        with self.session_factory() as db:
+            query = db.query(ScoutPheromone)
+            if intent_cluster:
+                query = query.filter(ScoutPheromone.intent_cluster == intent_cluster)
+            if only_active:
+                query = query.filter(ScoutPheromone.expires_at > now, ScoutPheromone.strength > 0)
+            return query.order_by(desc(ScoutPheromone.strength), desc(ScoutPheromone.updated_at)).limit(bounded_limit).all()
+
+    def run_scout_patrol(self, *, sample_size: int | None = None) -> dict[str, Any]:
+        patrol_size = sample_size if sample_size is not None else self.settings.scout_patrol_sample_size
+        bounded_sample_size = max(1, min(int(patrol_size), 200))
+
+        with self.session_factory() as db:
+            evaporated, expired = self._evaporate_pheromones(db)
+
+            tasks = (
+                db.query(Task)
+                .order_by(desc(Task.updated_at))
+                .limit(bounded_sample_size)
+                .all()
+            )
+            task_ids = [task.id for task in tasks]
+            feedback_by_task: dict[str, TaskFeedback] = {}
+            if task_ids:
+                entries = (
+                    db.query(TaskFeedback)
+                    .filter(TaskFeedback.task_id.in_(task_ids))
+                    .order_by(desc(TaskFeedback.created_at))
+                    .all()
+                )
+                for entry in entries:
+                    if entry.task_id not in feedback_by_task:
+                        feedback_by_task[entry.task_id] = entry
+
+            sampled_tasks = 0
+            touched_clusters: set[str] = set()
+            deposited_total = 0
+            for task in tasks:
+                refs = list(task.context_refs or [])
+                if not refs:
+                    continue
+
+                signals: list[dict[str, Any]] = []
+                for route in refs[:4]:
+                    route_text = str(route)
+                    source = "context"
+                    if "://" in route_text:
+                        source = route_text.split("://", 1)[0].strip().lower() or "context"
+                    signals.append(
+                        {
+                            "source": source,
+                            "route": route_text[:300],
+                            "novelty": 0.52,
+                            "reliability": 0.68,
+                            "cost": 0.08,
+                            "notes": "patrol sampled from historical task context",
+                        }
+                    )
+
+                latest_feedback = feedback_by_task.get(task.id)
+                if latest_feedback and latest_feedback.corrections:
+                    correction_text = str(latest_feedback.corrections).strip()
+                    if correction_text:
+                        signals.append(
+                            {
+                                "source": "feedback",
+                                "route": f"feedback://{task.id}",
+                                "novelty": 0.63,
+                                "reliability": 0.72,
+                                "cost": 0.06,
+                                "notes": correction_text[:280],
+                            }
+                        )
+
+                if not signals:
+                    continue
+
+                cluster = self._normalize_intent_cluster(task.goal)
+                ids = self._deposit_scout_pheromones(
+                    db=db,
+                    intent_cluster=cluster,
+                    scout_report={"signals": signals},
+                )
+                if ids:
+                    sampled_tasks += 1
+                    touched_clusters.add(cluster)
+                    deposited_total += len(ids)
+
+            summary = {
+                "sampleSize": bounded_sample_size,
+                "sampledTasks": sampled_tasks,
+                "touchedClusters": sorted(touched_clusters),
+                "deposited": deposited_total,
+                "evaporated": evaporated,
+                "expired": expired,
+            }
+            self._publish(db, EventTopic.scout_patrolled, summary)
+            db.commit()
+            return summary
 
     def list_events(self, limit: int = 100, topic: str | None = None) -> list[EvolutionEvent]:
         with self.session_factory() as db:

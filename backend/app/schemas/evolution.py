@@ -19,6 +19,41 @@ class EvolutionEventView(ApiModel):
     created_at: datetime
 
 
+class ScoutPheromoneView(ApiModel):
+    id: str
+    intent_cluster: str
+    source: str
+    route: str
+    novelty: float
+    reliability: float
+    cost: float
+    reward: float
+    strength: float
+    ttl_seconds: int
+    usage_count: int
+    success_count: int
+    failure_count: int
+    notes: str | None = None
+    metadata_json: dict[str, Any]
+    last_seen_at: datetime
+    expires_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScoutPatrolRequest(ApiModel):
+    sample_size: int = 30
+
+
+class ScoutPatrolResponse(ApiModel):
+    sample_size: int
+    sampled_tasks: int
+    touched_clusters: list[str]
+    deposited: int
+    evaporated: int
+    expired: int
+
+
 class CandidateStatusAuditView(ApiModel):
     id: str
     candidate_id: str

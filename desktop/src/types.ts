@@ -85,6 +85,37 @@ export interface EvolutionEventView {
   createdAt: string;
 }
 
+export interface ScoutPheromoneView {
+  id: string;
+  intentCluster: string;
+  source: string;
+  route: string;
+  novelty: number;
+  reliability: number;
+  cost: number;
+  reward: number;
+  strength: number;
+  ttlSeconds: number;
+  usageCount: number;
+  successCount: number;
+  failureCount: number;
+  notes?: string;
+  metadataJson: Record<string, unknown>;
+  lastSeenAt: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScoutPatrolResponse {
+  sampleSize: number;
+  sampledTasks: number;
+  touchedClusters: string[];
+  deposited: number;
+  evaporated: number;
+  expired: number;
+}
+
 export interface CandidateStatusAuditView {
   id: string;
   candidateId: string;

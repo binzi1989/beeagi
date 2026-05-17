@@ -16,6 +16,9 @@ except ImportError:  # pragma: no cover
 
 class EventTopic:
     scout_reported = "scout.reported"
+    scout_pheromone_deposited = "scout.pheromone_deposited"
+    scout_pheromone_evaporated = "scout.pheromone_evaporated"
+    scout_patrolled = "scout.patrolled"
     worker_planned = "worker.planned"
     worker_completed = "worker.completed"
     canary_assigned = "canary.assigned"

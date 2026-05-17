@@ -53,11 +53,17 @@ class WorkerAgent:
             "riskFlags": scout_report.get("riskFlags", []),
         }
 
-    def execute(self, task: Task, selected_skills: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def execute(
+        self,
+        task: Task,
+        selected_skills: list[dict[str, Any]],
+        scout_pheromones: list[dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         started = datetime.now(timezone.utc)
         patch_effects = self._collect_patch_effects(selected_skills)
         prompt_tweaks = patch_effects.get("promptTweaks", {})
         tool_policy = patch_effects.get("toolPolicy", {})
+        scout_pheromones = scout_pheromones or []
 
         max_retries = tool_policy.get("maxRetries") if isinstance(tool_policy, dict) else None
         prefer_low_risk = bool(tool_policy.get("preferLowRiskTools")) if isinstance(tool_policy, dict) else False
@@ -79,6 +85,7 @@ class WorkerAgent:
             f"Constraints: {task.constraints}\n"
             f"Quality target: {task.quality_target}\n"
             f"Selected skills: {selected_skills}\n"
+            f"Scout pheromones: {scout_pheromones}\n"
             "Generate a concise execution summary and key risks."
             f"{prompt_suffix}"
         )
@@ -113,6 +120,7 @@ class WorkerAgent:
                 "toolPolicy": tool_policy,
                 "sourceCandidates": patch_effects["sourceCandidates"],
             },
+            "scoutPheromones": scout_pheromones,
         }
         completed = datetime.now(timezone.utc)
         retry_count = 0

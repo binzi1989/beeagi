@@ -8,9 +8,11 @@ import {
   getHardeningReport,
   listCandidateAudits,
   listEvolutionEvents,
+  listScoutPheromones,
   listSkills,
   promoteCandidate,
   rollbackSkill,
+  runScoutPatrol,
   runAutoPromote,
   submitFeedback
 } from "./api/client";
@@ -20,6 +22,7 @@ import {
   ConversationTurn,
   EvolutionEventView,
   HardeningReportResponse,
+  ScoutPheromoneView,
   SkillCard,
   TaskDetail,
   TaskSpec
@@ -451,6 +454,7 @@ function App() {
   const [skills, setSkills] = useState<SkillCard[]>([]);
   const [events, setEvents] = useState<EvolutionEventView[]>([]);
   const [audits, setAudits] = useState<CandidateStatusAuditView[]>([]);
+  const [pheromones, setPheromones] = useState<ScoutPheromoneView[]>([]);
   const [hardeningReport, setHardeningReport] = useState<HardeningReportResponse>();
   const [latestTask, setLatestTask] = useState<TaskDetail>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -463,6 +467,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [healthBusy, setHealthBusy] = useState(false);
+  const [patrolBusy, setPatrolBusy] = useState(false);
   const [workflowLogs, setWorkflowLogs] = useState<string[]>([]);
 
   const scenario = useMemo(() => SCENARIOS.find((item) => item.id === scenarioId) ?? SCENARIOS[0], [scenarioId]);
@@ -535,14 +540,16 @@ function App() {
   };
 
   const refreshData = async () => {
-    const [skillsData, eventsData, auditsData] = await Promise.all([
+    const [skillsData, eventsData, auditsData, pheromoneData] = await Promise.all([
       listSkills(),
       listEvolutionEvents(),
-      listCandidateAudits(40)
+      listCandidateAudits(40),
+      listScoutPheromones(30, true)
     ]);
     setSkills(skillsData);
     setEvents(eventsData);
     setAudits(auditsData);
+    setPheromones(pheromoneData);
   };
 
   useEffect(() => {
@@ -911,6 +918,22 @@ function App() {
       setToast(errorText(error));
     } finally {
       setHealthBusy(false);
+    }
+  };
+
+  const patrolScout = async () => {
+    try {
+      setPatrolBusy(true);
+      const result = await runScoutPatrol(30);
+      appendWorkflowLog(
+        `scout patrol sampled=${result.sampledTasks}, deposited=${result.deposited}, touched=${result.touchedClusters.length}`
+      );
+      await refreshData();
+      setToast("scout patrol completed");
+    } catch (error) {
+      setToast(errorText(error));
+    } finally {
+      setPatrolBusy(false);
     }
   };
 
@@ -1298,6 +1321,24 @@ function App() {
                     </article>
                   ))}
                 </div>
+              </section>
+
+              <section className="card side-card">
+                <h2>Scout Pheromones</h2>
+                <button className="button" onClick={patrolScout} disabled={patrolBusy}>
+                  {patrolBusy ? (locale === "zh" ? "巡检中..." : "Patrolling...") : locale === "zh" ? "运行巡检" : "Run Patrol"}
+                </button>
+                {pheromones.length === 0 ? (
+                  <p className="hint">{locale === "zh" ? "当前没有活跃信息素" : "No active pheromones yet."}</p>
+                ) : (
+                  <ul className="compact-list">
+                    {pheromones.slice(0, 6).map((item) => (
+                      <li key={item.id}>
+                        {item.intentCluster} | {item.source} | s={item.strength.toFixed(2)} | use={item.usageCount}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </section>
 
               <section className="card side-card">

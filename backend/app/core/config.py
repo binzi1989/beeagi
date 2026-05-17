@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     auto_rollback_quality_drop: float = 0.03
     auto_rollback_error_rise: float = 0.02
 
+    scout_pheromone_ttl_hours: int = 48
+    scout_pheromone_top_k: int = 5
+    scout_pheromone_evaporation_rate: float = 0.06
+    scout_pheromone_min_strength: float = 0.05
+    scout_patrol_sample_size: int = 30
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

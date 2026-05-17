@@ -8,6 +8,9 @@ from app.schemas.evolution import (
     CandidateStatusAuditView,
     EvolutionEventView,
     HardeningReportResponse,
+    ScoutPatrolRequest,
+    ScoutPatrolResponse,
+    ScoutPheromoneView,
 )
 from app.services.pipeline import PipelineService
 
@@ -22,6 +25,31 @@ def get_events(
 ) -> list[EvolutionEventView]:
     events = pipeline.list_events(limit=limit, topic=topic)
     return [EvolutionEventView.model_validate(evt) for evt in events]
+
+
+@router.get("/pheromones", response_model=list[ScoutPheromoneView], response_model_by_alias=True)
+def list_scout_pheromones(
+    limit: int = Query(default=100, ge=1, le=500),
+    intent_cluster: str | None = Query(default=None, alias="intentCluster"),
+    only_active: bool = Query(default=True, alias="onlyActive"),
+    pipeline: PipelineService = Depends(get_pipeline),
+) -> list[ScoutPheromoneView]:
+    rows = pipeline.list_scout_pheromones(
+        limit=limit,
+        intent_cluster=intent_cluster,
+        only_active=only_active,
+    )
+    return [ScoutPheromoneView.model_validate(item) for item in rows]
+
+
+@router.post("/scout-patrol", response_model=ScoutPatrolResponse, response_model_by_alias=True)
+def run_scout_patrol(
+    payload: ScoutPatrolRequest,
+    pipeline: PipelineService = Depends(get_pipeline),
+    _: None = Depends(require_control_plane_api_key),
+) -> ScoutPatrolResponse:
+    result = pipeline.run_scout_patrol(sample_size=payload.sample_size)
+    return ScoutPatrolResponse.model_validate(result)
 
 
 @router.get("/candidate-audits", response_model=list[CandidateStatusAuditView], response_model_by_alias=True)

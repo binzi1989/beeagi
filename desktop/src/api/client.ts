@@ -7,6 +7,8 @@ import {
   EvolutionEventView,
   FeedbackPacket,
   HardeningReportResponse,
+  ScoutPatrolResponse,
+  ScoutPheromoneView,
   LlmConfigPatch,
   LlmConfigView,
   LlmTokenStatsResponse,
@@ -106,6 +108,18 @@ export function rollbackSkill(skillId: string, reason: string): Promise<SkillCar
 
 export function listEvolutionEvents(): Promise<EvolutionEventView[]> {
   return request<EvolutionEventView[]>("/evolution/events?limit=50");
+}
+
+export function listScoutPheromones(limit = 40, onlyActive = true): Promise<ScoutPheromoneView[]> {
+  const query = `/evolution/pheromones?limit=${limit}&onlyActive=${onlyActive}`;
+  return request<ScoutPheromoneView[]>(query);
+}
+
+export function runScoutPatrol(sampleSize = 30): Promise<ScoutPatrolResponse> {
+  return request<ScoutPatrolResponse>("/evolution/scout-patrol", {
+    method: "POST",
+    body: JSON.stringify({ sampleSize })
+  });
 }
 
 export function listCandidateAudits(limit = 50): Promise<CandidateStatusAuditView[]> {

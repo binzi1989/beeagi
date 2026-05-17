@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here.
 
+## v0.2.0 - 2026-05-17
+
+### Added
+
+- Active Scout pheromone loop (deposit, evaporation, task injection, reward, patrol)
+- Evolution APIs: `GET /evolution/pheromones`, `POST /evolution/scout-patrol`
+- Desktop pheromone panel with one-click patrol action
+- New backend tests for Scout pheromone closed-loop behavior
+- Demo assets and launch docs:
+  - `docs/demo/30s-demo-script.md`
+  - `docs/demo/30s-demo-script.zh-CN.md`
+  - `docs/growth/github-launch-playbook.zh-CN.md`
+  - `docs/releases/v0.2.0.md`
+  - `docs/releases/v0.2.0.zh-CN.md`
+
+### Changed
+
+- Reworked `README.md` and `README.zh-CN.md` for clearer onboarding and open-source distribution
+
 ## v0.1.0 - 2026-05-17
 
 ### Added
